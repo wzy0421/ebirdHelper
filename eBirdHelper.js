@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eBird 添加中文鸟名
 // @namespace    http://tampermonkey.net/
-// @version      1.3.0
+// @version      2.0.0
 // @description  在 eBird 网站上将鸟名改为“英文名(中文名)”格式
 // @match        https://ebird.org/*
 // @grant        GM.getValue
@@ -16,16 +16,16 @@ const HIGHLIGHT_ENDEMIC = true;
 const ENABLE_FULL_MATCH = false; // 控制是否在整页匹配所有鸟种
 const ENABLE_PARTIAL_MATCH = true; // 控制是否仅在特定区域匹配
 
-const RAW_BASE = 'https://raw.githubusercontent.com/wzy0421/ebirdHelper/main';
+const RAW_BASE = 'https://raw.githubusercontent.com/wzy0421/ebirdHelper/main/';
 const FILES = {
-  CN_MAP: 'birdMap.json',
-  ENDEMIC_MAP: 'endemicMap.json',
+    CN_MAP: 'birdMap.json',
+    ENDEMIC_MAP: 'endemicMap.json',
 };
 
 /** 缓存配置 */
 const CACHE_KEYS = {
-  CN_MAP: 'ebh_cn_map_cache_v1',
-  ENDEMIC_MAP: 'ebh_endemic_map_cache_v1',
+    CN_MAP: 'ebh_cn_map_cache_v1',
+    ENDEMIC_MAP: 'ebh_endemic_map_cache_v1',
 };
 const DEFAULT_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 7 天
 
@@ -35,76 +35,76 @@ const DEFAULT_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 7 天
  * - 缓存缺失或过期：前台拉取并写回
  */
 async function loadJSONWithCache(cacheKey, filePath, ttlMs = DEFAULT_TTL_MS) {
-  const url = RAW_BASE + filePath;
-  const cached = await GM.getValue(cacheKey, null);
-  const now = Date.now();
+    const url = RAW_BASE + filePath;
+    const cached = await GM.getValue(cacheKey, null);
+    const now = Date.now();
 
-  // 若有缓存且没过期，先返回旧数据，并后台尝试条件刷新
-  if (cached && now - cached.fetchedAt < ttlMs) {
-    // 后台条件刷新（不阻塞页面）
-    conditionalRefresh(cacheKey, url, cached.etag).catch(() => {});
-    return cached.data;
-  }
+    // 若有缓存且没过期，先返回旧数据，并后台尝试条件刷新
+    if (cached && now - cached.fetchedAt < ttlMs) {
+        // 后台条件刷新（不阻塞页面）
+        conditionalRefresh(cacheKey, url, cached.etag).catch(() => { });
+        return cached.data;
+    }
 
-  // 缓存缺失或过期：前台取一次
-  return fetchAndStore(cacheKey, url, cached?.etag ?? null);
+    // 缓存缺失或过期：前台取一次
+    return fetchAndStore(cacheKey, url, cached?.etag ?? null);
 }
 
 /** 后台条件刷新：If-None-Match 304 则复用旧数据，否则更新 */
 async function conditionalRefresh(cacheKey, url, etag) {
-  try {
-    // 发送条件请求（如服务器支持 ETag，会返回 304）
-    const res = await fetch(url, {
-      headers: etag ? { 'If-None-Match': etag } : {},
-      // raw.githubusercontent.com 允许 CORS；默认即可
-    });
-    if (res.status === 304) return; // 内容未变
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const newEtag = res.headers.get('etag') || null;
-    await GM.setValue(cacheKey, { data, etag: newEtag, fetchedAt: Date.now() });
-  } catch (e) {
-    // 静默失败，不打扰用户
-    console.debug('[ebh] conditional refresh failed:', e);
-  }
+    try {
+        // 发送条件请求（如服务器支持 ETag，会返回 304）
+        const res = await fetch(url, {
+            headers: etag ? { 'If-None-Match': etag } : {},
+            // raw.githubusercontent.com 允许 CORS；默认即可
+        });
+        if (res.status === 304) return; // 内容未变
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const newEtag = res.headers.get('etag') || null;
+        await GM.setValue(cacheKey, { data, etag: newEtag, fetchedAt: Date.now() });
+    } catch (e) {
+        // 静默失败，不打扰用户
+        console.debug('[ebh] conditional refresh failed:', e);
+    }
 }
 
 /** 前台拉取并写回缓存（用于过期或首次加载） */
 async function fetchAndStore(cacheKey, url, etag) {
-  const res = await fetch(url, { headers: etag ? { 'If-None-Match': etag } : {} });
-  if (res.status === 304) {
-    const cached = await GM.getValue(cacheKey, null);
-    if (cached) return cached.data;
-  }
-  if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
-  const data = await res.json();
-  const newEtag = res.headers.get('etag') || null;
-  await GM.setValue(cacheKey, { data, etag: newEtag, fetchedAt: Date.now() });
-  return data;
+    const res = await fetch(url, { headers: etag ? { 'If-None-Match': etag } : {} });
+    if (res.status === 304) {
+        const cached = await GM.getValue(cacheKey, null);
+        if (cached) return cached.data;
+    }
+    if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
+    const data = await res.json();
+    const newEtag = res.headers.get('etag') || null;
+    await GM.setValue(cacheKey, { data, etag: newEtag, fetchedAt: Date.now() });
+    return data;
 }
 
 /** 对外暴露的获取函数 */
 const dataStore = {
-  /** 获取英文名 -> 中文名（IOC）Map（对象或 Map 均可用） */
-  async getBirdNameMap() {
-    // 约定 json 结构是 { "Common Name": "中文名", ... }
-    const obj = await loadJSONWithCache(CACHE_KEYS.CN_MAP, FILES.CN_MAP);
-    // 你如果更喜欢 Map：
-    // return new Map(Object.entries(obj));
-    return obj;
-  },
-  /** 获取 Endemic Map（物种 -> 国家/区域） */
-  async getEndemicMap() {
-    // 约定 json 结构是 { "Species or Common Name": "COUNTRY/REGION or Array", ... }
-    const obj = await loadJSONWithCache(CACHE_KEYS.ENDEMIC_MAP, FILES.ENDEMIC_MAP);
-    return obj;
-  },
-  /** 手动清空缓存（可挂到菜单里） */
-  async clearCache() {
-    await GM.deleteValue(CACHE_KEYS.CN_MAP);
-    await GM.deleteValue(CACHE_KEYS.ENDEMIC_MAP);
-    alert('eBird Helper：已清空本地缓存，下次将从 GitHub 重新拉取。');
-  }
+    /** 获取英文名 -> 中文名（IOC）Map（对象或 Map 均可用） */
+    async getBirdNameMap() {
+        // 约定 json 结构是 { "Common Name": "中文名", ... }
+        const obj = await loadJSONWithCache(CACHE_KEYS.CN_MAP, FILES.CN_MAP);
+        // 你如果更喜欢 Map：
+        // return new Map(Object.entries(obj));
+        return obj;
+    },
+    /** 获取 Endemic Map（物种 -> 国家/区域） */
+    async getEndemicMap() {
+        // 约定 json 结构是 { "Species or Common Name": "COUNTRY/REGION or Array", ... }
+        const obj = await loadJSONWithCache(CACHE_KEYS.ENDEMIC_MAP, FILES.ENDEMIC_MAP);
+        return obj;
+    },
+    /** 手动清空缓存（可挂到菜单里） */
+    async clearCache() {
+        await GM.deleteValue(CACHE_KEYS.CN_MAP);
+        await GM.deleteValue(CACHE_KEYS.ENDEMIC_MAP);
+        alert('eBird Helper：已清空本地缓存，下次将从 GitHub 重新拉取。');
+    }
 };
 
 
@@ -359,8 +359,8 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
 
         // 关键修改：按名称长度从长到短排序，保证更长的复合名（如 Magpie-Robin）优先匹配
         const birdNames = Object.keys(birdMap)
-        .filter(name => name && name.length > 0)
-        .sort((a, b) => b.length - a.length);
+            .filter(name => name && name.length > 0)
+            .sort((a, b) => b.length - a.length);
 
         if (birdNames.length === 0) return;
 
@@ -407,4 +407,330 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
+})();
+
+(() => {
+    'use strict';
+
+    // URL 守卫（不影响其它页面中已存在的代码）
+    if (!/^https:\/\/ebird\.org\/submit\/checklist/.test(location.href) && !/^https:\/\/ebird\.org\/edit\/checklist/.test(location.href)) return;
+
+    const log = (...a) => console.log('[eBird PinyinTypeahead]', ...a);
+    const debounce = (fn, ms = 120) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+    const txt = el => (el ? (el.textContent || '').trim() : '');
+    const makeInitials = (p) => (p || '').replace(/[^a-zA-Z]/g, ' ').trim().split(/\s+/).map(w => w[0] || '').join('').toLowerCase();
+
+    const INPUT_SEL = '#jumpToSpp';
+    const RAW_URL = 'https://raw.githubusercontent.com/wzy0421/ebirdHelper/dev/pinyin_mapping.json';
+    const CACHE_KEY = 'pinyin_mapping_cache_v2_kvshape';
+    const CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
+
+    function gmFetchJSON(url) {
+        return new Promise((resolve, reject) => {
+            if (typeof GM_xmlhttpRequest === 'function') {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url,
+                    headers: { 'Accept': 'application/json' },
+                    onload: (res) => {
+                        try {
+                            if (res.status >= 200 && res.status < 300) resolve(JSON.parse(res.responseText));
+                            else reject(new Error(`HTTP ${res.status}`));
+                        } catch (e) { reject(e); }
+                    },
+                    onerror: (e) => reject(e),
+                    timeout: 15000,
+                    ontimeout: () => reject(new Error('timeout')),
+                });
+            } else {
+                fetch(url, { credentials: 'omit' })
+                    .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+                    .then(resolve, reject);
+            }
+        });
+    }
+
+    async function loadMappingJSON() {
+        try {
+            const cached = 'null'; // JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+            if (cached && cached.shape === 'kv' && cached.data && (Date.now() - cached.ts < CACHE_TTL)) {
+                log('使用缓存 pinyin_mapping（kv 结构）');
+                return cached.data;
+            }
+        } catch { }
+
+        const data = await gmFetchJSON(RAW_URL); // 期望是 { "Emu": {pinyin, initials}, ... }
+        try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), shape: 'kv', data })); } catch { }
+        return data;
+    }
+
+    // 将 { "Name": {pinyin, initials, latinName?} } 转为：
+    //   MAPPING: [{commonName, latinName, pinyin, initials}, ...]
+    //   NAME2ITEM: Map(lower(commonName) -> item)
+    function buildFromKeyedObject(rawObj) {
+        const arr = [];
+        const map = new Map();
+        if (rawObj && typeof rawObj === 'object' && !Array.isArray(rawObj)) {
+            for (const [commonName, v] of Object.entries(rawObj)) {
+                if (!commonName) continue;
+                const pinyin = (v && v.pinyin ? String(v.pinyin) : '').toLowerCase();
+                const initials = (v && v.initials ? String(v.initials) : makeInitials(pinyin)).toLowerCase();
+                // 允许可选的拉丁名字段（若你将来想加）：
+                const latinName = (v && (v.latinName || v.scientific)) ? String(v.latinName || v.scientific) : '';
+                if (!pinyin && !initials) continue; // 至少要有一个可匹配字段
+                const item = { commonName, latinName, pinyin, initials };
+                arr.push(item);
+                map.set(commonName.toLowerCase(), item);
+            }
+        }
+        return { arr, map };
+    }
+
+    let visibleSet = new Set();
+    const collectVisible = () => {
+        const found = new Set();
+
+        // 1) 首选：eBird 提交页的标准结构
+        document.querySelectorAll('.SubmitChecklist-species-name span').forEach(span => {
+            let common = '';
+
+            // 先尝试精确取纯英文名：只拼接文本节点（忽略 <em class="sci">…</em>）
+            span.childNodes.forEach(node => {
+                if (node.nodeType === Node.TEXT_NODE) {
+                    common += node.nodeValue || '';
+                }
+            });
+
+            common = (common || '').trim();
+
+            // 兜底：如果上面没拿到（极少数结构不同），再从 .Heading-main / .ChecklistRow-name 补一次
+            if (!common) {
+                const row = span.closest('[data-observation-id]') || span.closest('.Observation') || span.closest('.ChecklistRow');
+                const main =
+                    row?.querySelector('.Heading-main') ||
+                    row?.querySelector('.ChecklistRow-name');
+                if (main) {
+                    common = (main.textContent || '').trim();
+                }
+            }
+
+            if (common) {
+                // 去尾部括注/星号（若英文名后面还有备注）
+                common = common.replace(/\s*\([^)]*\)\s*$/, '').replace(/\*+$/, '').trim();
+                // 去可能的中文括注（保险处理）
+                common = common.replace(/（.*?）|\(.*?[\u4e00-\u9fa5].*?\)/g, '').trim();
+                if (common) found.add(common.toLowerCase());
+            }
+        });
+
+        // 2) 若上面路径没有匹配到（某些布局），再尝试其它常见容器
+        if (found.size === 0) {
+            document.querySelectorAll('[data-observation-id] .Heading-main, .ChecklistRow .ChecklistRow-name').forEach(el => {
+                // 只取纯文本节点（避免子元素带学名/附注）
+                let common = '';
+                el.childNodes.forEach(node => {
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        common += node.nodeValue || '';
+                    }
+                });
+                common = (common || '').trim()
+                    .replace(/\s*\([^)]*\)\s*$/, '')
+                    .replace(/\*+$/, '')
+                    .replace(/（.*?）|\(.*?[\u4e00-\u9fa5].*?\)/g, '')
+                    .trim();
+                if (common) found.add(common.toLowerCase());
+            });
+        }
+
+        visibleSet = found;
+        console.log('[eBird PinyinTypeahead] 可见物种数:', visibleSet.size);
+    };
+
+
+    function getDom() {
+        const input = document.querySelector(INPUT_SEL);
+        if (!input) return { input: null, dropdown: null, list: null };
+        const dropdownId = input.getAttribute('aria-controls') || 'Suggest-dropdown-jumpToSpp';
+        const dropdown = document.getElementById(dropdownId) || document.querySelector('#Suggest-dropdown-jumpToSpp') || null;
+        const list = dropdown ? dropdown.querySelector('.Suggest-suggestions') : null;
+        return { input, dropdown, list };
+    }
+    function ensureOpen(dropdown) {
+        if (!dropdown) return;
+        dropdown.style.display = '';
+        dropdown.parentElement?.setAttribute('aria-expanded', 'true');
+    }
+    function ensureClosed(dropdown) {
+        if (!dropdown) return;
+        dropdown.style.display = 'none';
+        dropdown.parentElement?.setAttribute('aria-expanded', 'false');
+    }
+
+    function makeItemNode(item, onPick) {
+        const wrap = document.createElement('div');
+        wrap.className = 'Suggest-suggestion';
+        wrap.setAttribute('role', 'option');
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'Button Button--link u-text-left u-block';
+        btn.innerHTML = `
+      <div class="u-text-3">${item.commonName}</div>
+      ${item.latinName ? `<div class="u-text-4 u-muted">${item.latinName}</div>` : ''}
+    `;
+        btn.addEventListener('mousedown', (e) => e.preventDefault());
+        btn.addEventListener('click', () => onPick(item.commonName));
+        wrap.appendChild(btn);
+        return wrap;
+    }
+
+    function renderList(listEl, dropdown, items, onPick) {
+        if (!listEl || !dropdown) return;
+        listEl.innerHTML = '';
+        if (!items.length) {
+            const empty = dropdown.querySelector('.Suggest-empty');
+            listEl.appendChild(empty ? empty.cloneNode(true) : document.createElement('div'));
+        } else {
+            items.forEach(it => listEl.appendChild(makeItemNode(it, onPick)));
+        }
+        ensureOpen(dropdown);
+    }
+
+    function pickCommonName(commonName) {
+        const { input, dropdown } = getDom();
+        if (!input) return;
+        input.value = commonName;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+        ensureClosed(dropdown);
+    }
+
+    let MAPPING = [];          // Array<{commonName, latinName, pinyin, initials}>
+    let NAME2ITEM = new Map(); // Map<lowerName, item>
+
+    function byTerm(arr, term) {
+        const t = (term || '').toLowerCase().trim();
+        if (!t) {
+            // 空输入时不展示庞大列表：按需返回空数组
+            return [];
+        }
+
+        const exact = [];
+        const starts = [];
+        const contains = [];
+
+        for (const it of arr) {
+            const p = (it.pinyin || '').toLowerCase();
+            const ini = (it.initials || '').toLowerCase();
+
+            const isExact = (p === t) || (ini === t);
+            if (isExact) {
+                exact.push(it);
+                continue;
+            }
+
+            const isStart = p.startsWith(t) || ini.startsWith(t);
+            if (isStart) {
+                starts.push(it);
+                continue;
+            }
+
+            const isContains = p.includes(t) || ini.includes(t);
+            if (isContains) {
+                contains.push(it);
+            }
+        }
+
+        // 规则 1：短输入（<=2）且匹配总数 > 5，仅显示精确匹配
+        if (t.length <= 2) {
+            const total = exact.length + starts.length + contains.length;
+            if (total > 5) {
+                // 只显示精确匹配（即使为空也按规则为空）
+                return exact.slice(0, 50);
+            }
+        }
+
+        // 规则 2：长输入（>2）或短输入但总数<=5：显示全部（精确优先，其次前缀、包含）
+        return [...exact, ...starts, ...contains].slice(0, 50);
+    }
+
+    function matchLocal(term) {
+        const cands = [];
+        for (const lowerName of visibleSet) {
+            const mapped = NAME2ITEM.get(lowerName);
+            if (mapped) cands.push(mapped);
+        }
+        return byTerm(cands, term);
+    }
+    function matchGlobal(term) {
+        return byTerm(MAPPING, term);
+    }
+
+    let overrideOn = false;
+
+    function onInputCapture(e) {
+        const { input, dropdown, list } = getDom();
+        if (!input || !dropdown || !list) return;
+
+        const v = input.value || '';
+        if (v.startsWith('@@')) {
+            overrideOn = true;
+            e.stopImmediatePropagation();
+            const term = v.slice(2).trim();
+            renderList(list, dropdown, matchGlobal(term), pickCommonName);
+        } else if (v.startsWith('@')) {
+            overrideOn = true;
+            e.stopImmediatePropagation();
+            const term = v.slice(1).trim();
+            renderList(list, dropdown, matchLocal(term), pickCommonName);
+        } else {
+            if (overrideOn) {
+                overrideOn = false;
+                list.innerHTML = '';
+            }
+            // 交还原生
+        }
+    }
+
+    function onKeydownCapture(e) {
+        if (!overrideOn) return;
+        const { list } = getDom();
+        if (!list) return;
+        const items = [...list.querySelectorAll('.Suggest-suggestion button')];
+        if (!items.length) return;
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            items[0].click();
+        }
+    }
+
+    function bindInput() {
+        const { input } = getDom();
+        if (!input || input.__pinyinBound) return;
+        input.__pinyinBound = true;
+        input.addEventListener('input', onInputCapture, true);
+        input.addEventListener('keydown', onKeydownCapture, true);
+        log('已绑定 species 输入');
+    }
+
+    (async () => {
+        try {
+            const rawKV = await loadMappingJSON();                // 期望是对象而非数组
+            const { arr, map } = buildFromKeyedObject(rawKV);     // 转换为数组与索引
+            MAPPING = arr;
+            NAME2ITEM = map;
+            log('pinyin mapping (kv) 条数：', MAPPING.length);
+
+            collectVisible();
+            bindInput();
+
+            const mo = new MutationObserver(debounce(() => {
+                collectVisible();
+                bindInput();
+            }, 150));
+            mo.observe(document.body, { childList: true, subtree: true });
+        } catch (e) {
+            console.error('[eBird PinyinTypeahead] 加载/初始化失败：', e);
+        }
+    })();
+
 })();
