@@ -1,6 +1,8 @@
 {
     "Emu": {
         "pinyin": "ermiao",
-        "initials": "em"
+        "initials": "em",
+        "code": "emu1",
+        "name": "Emu - Dromaius novaehollandiae"
     }
 }
