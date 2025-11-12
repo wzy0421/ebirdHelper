@@ -1,3 +1,6 @@
 {
-    "Emu": "er miao"
+    "Emu": {
+        "pinyin": "ermiao",
+        "initials": "em"
+    }
 }
