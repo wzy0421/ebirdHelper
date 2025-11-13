@@ -409,110 +409,137 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
     observer.observe(document.body, { childList: true, subtree: true });
 })();
 
-/* === [APPEND ONLY] eBirdHelper: @ pinyin → jump to existing species input (v6) === */
 (() => {
     'use strict';
 
-    const LOG_PREFIX = '[eBird @Pinyin]';
+    const LOG_PREFIX = '[eBird@Pinyin]';
     const log = (...a) => console.log(LOG_PREFIX, ...a);
 
-    const RAW_URL = 'https://raw.githubusercontent.com/wzy0421/ebirdHelper/dev/pinyin_mapping.json';
-    const CACHE_KEY = 'pinyin_mapping_cache_v6';
-    const CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
+    const URL_MAPPING = 'https://raw.githubusercontent.com/wzy0421/ebirdHelper/dev/pinyin_mapping.json';
+    const CACHE_KEY = 'pinyin_mapping_cache_v9';
+    const CACHE_TTL = 86400 * 1000; // 24h
 
-    // lower(commonName) -> { commonName, code?, pinyinLower, initialsLower }
+    // lowerName → { commonName, code?, pinyinLower, initialsLower }
     let NAME2ENTRY = new Map();
-    // 当前页面可用的物种列表（只包含当前 checklist 上已经有的物种）
+    // 当前页面已存在的可跳转物种
     let VISIBLE_ITEMS = [];
-    // 当前 input 是否处于“由我们接管”的 @ 模式
+    // 当前输入框是否处于 @ 模式
     let overrideOn = false;
 
-    /* ---------- 工具 ---------- */
+    /* ---------------------------------------
+       样式：@ 模式隐藏原生 .Suggest-empty
+       --------------------------------------- */
+    (function injectPinyinCSS() {
+        const css = `
+    .Suggest-dropdown.__pinyin-active .Suggest-empty {
+      display: none !important;
+    }`;
+        const s = document.createElement('style');
+        s.textContent = css;
+        document.documentElement.appendChild(s);
+    })();
+
+    /* ---------------------------------------
+       工具函数：拉取 & 缓存 pinyin mapping
+       --------------------------------------- */
+
     function gmFetchJSON(url) {
-        return new Promise((resolve, reject) => {
+        return new Promise(function (resolve, reject) {
             if (typeof GM_xmlhttpRequest === 'function') {
                 GM_xmlhttpRequest({
                     method: 'GET',
-                    url,
+                    url: url,
                     headers: { 'Accept': 'application/json' },
-                    onload: res => {
+                    onload: function (res) {
                         try {
-                            if (res.status >= 200 && res.status < 300) resolve(JSON.parse(res.responseText));
-                            else reject(new Error('HTTP ' + res.status));
-                        } catch (e) { reject(e); }
+                            if (res.status >= 200 && res.status < 300) {
+                                resolve(JSON.parse(res.responseText));
+                            } else {
+                                reject(new Error('HTTP ' + res.status));
+                            }
+                        } catch (e) {
+                            reject(e);
+                        }
                     },
-                    onerror: e => reject(e),
+                    onerror: function (e) { reject(e); },
                     timeout: 15000,
-                    ontimeout: () => reject(new Error('timeout')),
+                    ontimeout: function () { reject(new Error('timeout')); }
                 });
             } else if (typeof fetch === 'function') {
-                fetch(url, { credentials: 'omit' })
-                    .then(r => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
-                    .then(resolve, reject);
+                fetch(url)
+                    .then(function (r) {
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        return r.json();
+                    })
+                    .then(resolve)
+                    .catch(reject);
             } else {
-                reject(new Error('No fetch / GM_xmlhttpRequest'));
+                reject(new Error('no fetch / GM_xmlhttpRequest'));
             }
         });
     }
 
-    function loadMappingJSON() {
-        return new Promise((resolve, reject) => {
+    function loadPinyinMapping() {
+        return new Promise(function (resolve, reject) {
             try {
-                const cachedRaw = localStorage.getItem(CACHE_KEY);
-                if (cachedRaw) {
-                    const cached = JSON.parse(cachedRaw);
-                    if (cached && cached.data && (Date.now() - cached.ts < CACHE_TTL)) {
-                        // log('使用缓存 pinyin_mapping');
-                        resolve(cached.data);
+                var raw = localStorage.getItem(CACHE_KEY);
+                if (raw) {
+                    var obj = JSON.parse(raw);
+                    if (obj && obj.data && (Date.now() - obj.ts < CACHE_TTL)) {
+                        log('使用缓存 pinyin_mapping');
+                        resolve(obj.data);
                         return;
                     }
                 }
             } catch (e) {
                 console.warn(LOG_PREFIX, '缓存读取失败:', e);
             }
-            gmFetchJSON(RAW_URL)
-                .then(data => {
-                    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), data })); } catch { }
-                    resolve(data);
-                })
-                .catch(reject);
+
+            gmFetchJSON(URL_MAPPING).then(function (data) {
+                try {
+                    localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), data: data }));
+                } catch (e2) {
+                    console.warn(LOG_PREFIX, '缓存写入失败:', e2);
+                }
+                resolve(data);
+            }, reject);
         });
     }
 
-    function makeInitials(p) {
-        return (p || '')
+    function makeInitials(pinyin) {
+        return String(pinyin || '')
             .replace(/[^a-zA-Z]/g, ' ')
             .trim()
             .split(/\s+/)
-            .map(w => (w ? w[0] : ''))
+            .map(function (w) { return w ? w[0] : ''; })
             .join('')
             .toLowerCase();
     }
 
     function buildNameMap(rawObj) {
-        const map = new Map();
-        if (rawObj && typeof rawObj === 'object' && !Array.isArray(rawObj)) {
-            for (const key in rawObj) {
-                if (!Object.prototype.hasOwnProperty.call(rawObj, key)) continue;
-                const commonName = key || '';
-                if (!commonName) continue;
-                const v = rawObj[key] || {};
-                const pinyin = (v.pinyin ? String(v.pinyin) : '').toLowerCase();
-                const initials = (v.initials ? String(v.initials) : makeInitials(pinyin)).toLowerCase();
-                const code = v.code ? String(v.code).trim() : '';
-                if (!pinyin && !initials) continue;
-                map.set(commonName.toLowerCase(), {
-                    commonName,
-                    code,
-                    pinyinLower: pinyin,
-                    initialsLower: initials,
-                });
-            }
+        var map = new Map();
+        if (!rawObj || typeof rawObj !== 'object' || Array.isArray(rawObj)) return;
+        for (var key in rawObj) {
+            if (!Object.prototype.hasOwnProperty.call(rawObj, key)) continue;
+            var v = rawObj[key] || {};
+            var p = String(v.pinyin || '').toLowerCase();
+            var i = String(v.initials || makeInitials(p)).toLowerCase();
+            var code = v.code ? String(v.code).trim() : '';
+            if (!p && !i) continue;
+            map.set(String(key).toLowerCase(), {
+                commonName: key,
+                code: code,
+                pinyinLower: p,
+                initialsLower: i
+            });
         }
         NAME2ENTRY = map;
     }
 
-    /* ---------- DOM 辅助 ---------- */
+    /* ---------------------------------------
+       DOM 辅助
+       --------------------------------------- */
+
     function findSpeciesInput() {
         return (
             document.querySelector('#jumpToSpp') ||
@@ -520,63 +547,55 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
         );
     }
 
+    // ⭐ 关键改动：必要时“造”出 dropdown + .Suggest-suggestions
     function getDom() {
-        const input = findSpeciesInput();
+        var input = findSpeciesInput();
         if (!input) return { input: null, dropdown: null, list: null, emptyTpl: null };
-        const dropdownId = input.getAttribute('aria-controls') || 'Suggest-dropdown-jumpToSpp';
-        const dropdown =
-            document.getElementById(dropdownId) ||
-            document.querySelector('#Suggest-dropdown-jumpToSpp') ||
-            null;
-        const list = dropdown ? dropdown.querySelector('.Suggest-suggestions') : null;
-        const emptyTpl = dropdown ? dropdown.querySelector('.Suggest-empty') : null;
-        return { input, dropdown, list, emptyTpl };
+
+        var dropdownId = input.getAttribute('aria-controls') || 'Suggest-dropdown-jumpToSpp';
+        var dropdown = document.getElementById(dropdownId);
+
+        if (!dropdown) {
+            // 创建一个基础 dropdown，让 @ 模式第一次就有壳可用
+            dropdown = document.createElement('div');
+            dropdown.id = dropdownId;
+            dropdown.className = 'Suggest-dropdown';
+            dropdown.setAttribute('role', 'listbox');
+            dropdown.style.display = 'none';
+
+            // 尝试插在 input 后面
+            if (input.parentNode) {
+                input.parentNode.appendChild(dropdown);
+            } else {
+                document.body.appendChild(dropdown);
+            }
+        }
+
+        var list = dropdown.querySelector('.Suggest-suggestions');
+        if (!list) {
+            list = document.createElement('div');
+            list.className = 'Suggest-suggestions';
+            dropdown.appendChild(list);
+        }
+
+        var emptyTpl = dropdown.querySelector('.Suggest-empty');
+
+        return { input: input, dropdown: dropdown, list: list, emptyTpl: emptyTpl };
     }
 
-    function ensureOpen(dropdown) {
-        if (!dropdown) return;
-        dropdown.style.display = 'block';
-        if (dropdown.parentElement) dropdown.parentElement.setAttribute('aria-expanded', 'true');
-    }
-
-    function ensureClosed(dropdown) {
-        if (!dropdown) return;
-        dropdown.style.removeProperty('display');
-        if (dropdown.parentElement) dropdown.parentElement.removeAttribute('aria-expanded');
-    }
-
-    /* ---------- 提取英文名 & 高亮跳转 ---------- */
-    function extractCommonNameFromSpan(span) {
-        let raw = '';
-        span.childNodes.forEach(node => {
-            if (node.nodeType === Node.TEXT_NODE) raw += node.textContent || '';
+    function extractCommonName(span) {
+        if (!span) return '';
+        var txt = '';
+        span.childNodes.forEach(function (n) {
+            if (n.nodeType === Node.TEXT_NODE) txt += n.textContent || '';
         });
-        raw = raw.trim();
-        // Southern Cassowary(双垂鹤鸵) → Southern Cassowary
-        return raw.replace(/\(.*$/, '').trim();
+        txt = txt.trim();
+        return txt.replace(/\(.*$/, '').trim();
     }
-
-    // 高亮样式
-    (function injectHighlightCSS() {
-        const css =
-            '.__pinyin_jump_flash{' +
-            'outline:3px solid rgba(255,200,0,.9);' +
-            'outline-offset:2px;' +
-            'animation:__pinyin_flash 1.0s ease-out 1;' +
-            'border-radius:6px;' +
-            '}' +
-            '@keyframes __pinyin_flash{' +
-            '0%{outline-color:rgba(255,200,0,1);}' +
-            '100%{outline-color:rgba(255,200,0,0);}' +
-            '}';
-        const s = document.createElement('style');
-        s.textContent = css;
-        document.documentElement.appendChild(s);
-    })();
 
     function findCountInputByCode(code) {
         if (!code) return null;
-        let el = document.getElementById(code);
+        var el = document.getElementById(code);
         if (el) return el;
         el = document.querySelector('input.sc[name^="sp[\'' + code + '\']"]');
         if (el) return el;
@@ -585,13 +604,13 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
     }
 
     function jumpToItem(item) {
-        let input = null;
-        let rowEl = null;
+        var input = null;
+        var row = null;
 
         if (item.code) {
             input = findCountInputByCode(item.code);
             if (input) {
-                rowEl =
+                row =
                     input.closest('[data-observation-id]') ||
                     input.closest('.SubmitChecklist-species-name') ||
                     input.closest('tr') ||
@@ -599,142 +618,161 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
             }
         }
 
-        if (!rowEl) {
-            const nodes = document.querySelectorAll('.SubmitChecklist-species-name[id^="name_"] span');
-            const target = item.commonName.toLowerCase();
-            nodes.forEach(span => {
-                if (rowEl) return;
-                const cn = extractCommonNameFromSpan(span).toLowerCase();
+        if (!row) {
+            var spans = document.querySelectorAll('.SubmitChecklist-species-name[id^="name_"] span');
+            var target = item.commonName.toLowerCase();
+            for (var i = 0; i < spans.length; i++) {
+                var s = spans[i];
+                var cn = extractCommonName(s).toLowerCase();
                 if (cn === target) {
-                    rowEl = span.closest('.SubmitChecklist-species-name') || span;
-                    const row = rowEl.closest('tr, .SubmitChecklist-row, .ChecklistRow') || rowEl;
-                    input = row.querySelector('input.sc') || row.querySelector('input, textarea, [contenteditable="true"]');
+                    row = s.closest('.SubmitChecklist-species-name');
+                    if (row) {
+                        var tr = row.closest('tr') || row;
+                        input = tr.querySelector('input.sc') || tr.querySelector('input');
+                    }
+                    break;
                 }
-            });
+            }
         }
 
-        if (!rowEl || !input) return false;
+        if (!row || !input) return false;
 
-        rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        rowEl.classList.add('__pinyin_jump_flash');
-        setTimeout(() => rowEl.classList.remove('__pinyin_jump_flash'), 1000);
-
+        try {
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } catch (e) {
+            row.scrollIntoView();
+        }
         input.focus();
-        try { if (typeof input.select === 'function') input.select(); } catch { }
+        try { if (typeof input.select === 'function') input.select(); } catch (e2) { }
         return true;
     }
 
-    /* ---------- 构建本页可用物种列表（通过 name_xxx DOM） ---------- */
+    /* ---------------------------------------
+       提取页面已有物种
+       --------------------------------------- */
+
     function collectVisibleItems() {
-        const items = [];
-        const seen = new Set();
-        const nodes = document.querySelectorAll('.SubmitChecklist-species-name[id^="name_"]');
+        var arr = [];
+        var seen = new Set();
+        var divs = document.querySelectorAll('.SubmitChecklist-species-name[id^="name_"]');
 
-        nodes.forEach(div => {
-            const id = div.id || '';
-            const code = id.replace(/^name_/, '').trim();
-            if (!code) return;
+        for (var i = 0; i < divs.length; i++) {
+            var div = divs[i];
+            var span = div.querySelector('span');
+            if (!span) continue;
 
-            const span = div.querySelector('span');
-            if (!span) return;
+            var cn = extractCommonName(span);
+            var lower = cn.toLowerCase();
+            if (seen.has(lower)) continue;
+            var entry = NAME2ENTRY.get(lower);
+            if (!entry) continue;
 
-            const commonName = extractCommonNameFromSpan(span);
-            const lower = commonName.toLowerCase();
-            const base = NAME2ENTRY.get(lower);
-            if (!base) return;
-            if (seen.has(lower)) return;
+            var code = (div.id || '').replace(/^name_/, '').trim();
             seen.add(lower);
-
-            items.push({
-                commonName: base.commonName,
-                code,
-                pinyinLower: base.pinyinLower,
-                initialsLower: base.initialsLower,
+            arr.push({
+                commonName: entry.commonName,
+                code: code,
+                pinyinLower: entry.pinyinLower,
+                initialsLower: entry.initialsLower
             });
-        });
+        }
 
-        VISIBLE_ITEMS = items;
-        // log('可用于 @ 匹配的物种数:', VISIBLE_ITEMS.length);
+        VISIBLE_ITEMS = arr;
+        log('可用于 @ 匹配的物种数：', arr.length);
     }
 
-    const debouncedCollect = (() => {
-        let t = null;
-        return () => {
+    var debouncedCollect = (function () {
+        var t = null;
+        return function () {
             if (t) clearTimeout(t);
             t = setTimeout(collectVisibleItems, 150);
         };
     })();
 
-    /* ---------- term 过滤 ---------- */
+    /* ---------------------------------------
+       匹配逻辑
+       --------------------------------------- */
+
     function filterByTerm(arr, term) {
-        const t = (term || '').toLowerCase().trim();
+        var t = (term || '').toLowerCase().trim();
         if (!t) return [];
 
-        const exact = [];
-        const starts = [];
-        const contains = [];
+        var exact = [];
+        var starts = [];
+        var contains = [];
 
-        for (let i = 0; i < arr.length; i++) {
-            const it = arr[i];
-            const p = it.pinyinLower || '';
-            const ini = it.initialsLower || '';
+        for (var i = 0; i < arr.length; i++) {
+            var it = arr[i];
+            var p = it.pinyinLower || '';
+            var ini = it.initialsLower || '';
 
-            const isExact = (p === t) || (ini === t);
-            if (isExact) { exact.push(it); continue; }
-
-            const isStart = p.indexOf(t) === 0 || ini.indexOf(t) === 0;
-            if (isStart) { starts.push(it); continue; }
-
-            const isContains = p.indexOf(t) !== -1 || ini.indexOf(t) !== -1;
-            if (isContains) contains.push(it);
+            if (p === t || ini === t) {
+                exact.push(it);
+            } else if (p.indexOf(t) === 0 || ini.indexOf(t) === 0) {
+                starts.push(it);
+            } else if (p.indexOf(t) !== -1 || ini.indexOf(t) !== -1) {
+                contains.push(it);
+            }
         }
 
         if (t.length <= 2) {
-            const total = exact.length + starts.length + contains.length;
-            if (total > 5) return exact.slice(0, 50);
+            var total = exact.length + starts.length + contains.length;
+            if (total > 5) return exact;
         }
-        return exact.concat(starts, contains).slice(0, 50);
+        return exact.concat(starts, contains);
     }
 
-    /* ---------- dropdown 渲染 ---------- */
+    /* ---------------------------------------
+       清除我们自己的 suggestion
+       --------------------------------------- */
+
+    function clearPinyinSuggestions(list) {
+        if (!list) return;
+        var nodes = list.querySelectorAll('.__pinyin-item');
+        for (var i = 0; i < nodes.length; i++) {
+            nodes[i].remove();
+        }
+    }
+
+    /* ---------------------------------------
+       构造 suggestion 节点（复用原生样式）
+       --------------------------------------- */
+
     function makeItemNode(item, onPick) {
-        const { dropdown } = getDom();
-        const proto = dropdown && dropdown.querySelector('.Suggest-suggestion');
-        let wrap, btn;
+        var ctx = getDom();
+        var dropdown = ctx.dropdown;
+        var proto = dropdown ? dropdown.querySelector('.Suggest-suggestion') : null;
+        var wrap, btn;
 
         if (proto) {
             wrap = proto.cloneNode(true);
             wrap.classList.remove('is-active');
             btn = wrap.querySelector('button, .Button');
-            if (btn) {
-                btn.innerHTML = '';
-                const main = document.createElement('div');
-                main.className = 'u-text-3';
-                main.textContent = item.commonName;
-                btn.appendChild(main);
-                if (item.code) {
-                    const sub = document.createElement('div');
-                    sub.className = 'u-text-4 u-muted';
-                    sub.textContent = item.code;
-                    btn.appendChild(sub);
-                }
-            }
-        }
-
-        if (!wrap) {
+            if (btn) btn.innerHTML = '';
+        } else {
             wrap = document.createElement('div');
             wrap.className = 'Suggest-suggestion';
             btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'Button Button--link u-text-left u-block';
-            btn.innerHTML =
-                '<div class="u-text-3">' + item.commonName + '</div>' +
-                (item.code ? '<div class="u-text-4 u-muted">' + item.code + '</div>' : '');
             wrap.appendChild(btn);
         }
+
         wrap.classList.add('__pinyin-item');
-        btn.addEventListener('mousedown', e => e.preventDefault());
-        btn.addEventListener('click', e => {
+
+        var main = document.createElement('div');
+        main.className = 'u-text-3';
+        main.textContent = item.commonName;
+        btn.appendChild(main);
+
+        if (item.code) {
+            var sub = document.createElement('div');
+            sub.className = 'u-text-4 u-muted';
+            sub.textContent = item.code;
+            btn.appendChild(sub);
+        }
+
+        btn.addEventListener('click', function (e) {
             e.preventDefault();
             e.stopPropagation();
             onPick(item);
@@ -743,153 +781,169 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
         return wrap;
     }
 
-    function clearPinyinSuggestions(list) {
-        if (!list) return;
-        list.querySelectorAll('.__pinyin-item').forEach(n => n.remove());
-
-    }
+    /* ---------------------------------------
+       渲染结果（不再 innerHTML = ''）
+       --------------------------------------- */
 
     function renderResults(term, results) {
-        const { dropdown, list, emptyTpl } = getDom();
+        var ctx = getDom();
+        var dropdown = ctx.dropdown;
+        var list = ctx.list;
         if (!dropdown || !list) return;
 
-        // list.innerHTML = '';
         clearPinyinSuggestions(list);
+
         if (!results.length) {
-            if (emptyTpl) {
-                list.appendChild(emptyTpl.cloneNode(true));
-            } else {
-                const div = document.createElement('div');
-                div.textContent = 'No matches for @' + term + '. Remove "@" to use Add species.';
-                list.appendChild(div);
-            }
-            ensureOpen(dropdown);
+            dropdown.classList.remove('__pinyin-active');
+            dropdown.style.display = ''; // 交给原生决定
             return;
         }
 
-        results.forEach(it => list.appendChild(makeItemNode(it, pickItem)));
-        ensureOpen(dropdown);
+        dropdown.classList.add('__pinyin-active');
+        dropdown.style.display = 'block';
+        for (var i = 0; i < results.length; i++) {
+            list.appendChild(makeItemNode(results[i], pickItem));
+        }
     }
 
-    /* ---------- 点击候选 ---------- */
+    /* ---------------------------------------
+       点击选择
+       --------------------------------------- */
+
     function pickItem(item) {
-        const { input, dropdown, list } = getDom();
+        var ctx = getDom();
+        var input = ctx.input;
+        var dropdown = ctx.dropdown;
+        var list = ctx.list;
         if (!input) return;
 
         overrideOn = false;
-        // if (list) list.innerHTML = '';
-        if (list) clearPinyinSuggestions(list);
-        ensureClosed(dropdown);
+        clearPinyinSuggestions(list);
+        if (dropdown) {
+            dropdown.classList.remove('__pinyin-active');
+            dropdown.style.display = '';
+        }
 
-        const jumped = jumpToItem(item);
-
-        // 清空搜索框，这次 input（不以 @ 开头）交给原生
-        input.value = '';
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-
+        var jumped = jumpToItem(item);
         if (!jumped) {
             input.value = item.commonName;
-            input.dispatchEvent(new Event('input', { bubbles: true }));
+        } else {
+            input.value = '';
         }
+        input.dispatchEvent(new Event('input', { bubbles: true }));
     }
 
-    /* ---------- 事件：用 input(capture) 拦截 @，其它全部放行 ---------- */
-    function onInputCapture(e) {
-        const { input, dropdown, list } = getDom();
-        if (!input) return;
-        const v = input.value || '';
+    /* ---------------------------------------
+       监听 input（只在 @ 前缀时介入）
+       --------------------------------------- */
 
-        // @@：完全交给原生
+    function onInputCapture(e) {
+        var ctx = getDom();
+        var input = ctx.input;
+        var dropdown = ctx.dropdown;
+        var list = ctx.list;
+        if (!input) return;
+
+        var v = input.value || '';
+
+        // @@ → 原生逻辑
         if (v.indexOf('@@') === 0) {
             if (overrideOn) {
                 overrideOn = false;
-                clearPinyinSuggestions(list);      // 只清掉我们自己的 @ 结果
-                // 不再关闭 dropdown，让原生自己处理
+                clearPinyinSuggestions(list);
+                if (dropdown) {
+                    dropdown.classList.remove('__pinyin-active');
+                    dropdown.style.display = '';
+                }
             }
-            return; // 不拦截
-        }
-
-        // 2) 非 @：退出我们接管，原生负责 dropdown
-        if (v.indexOf('@') !== 0) {
-            if (overrideOn) {
-                overrideOn = false;
-                clearPinyinSuggestions(list);      // 同样，只删我们自己的
-            }
-            return; // 不拦截
-        }
-
-        console.log(3);
-
-        // 走到这里 = 真正的 @ 模式：拦截原生 typeahead 处理这次输入
-        e.stopImmediatePropagation();
-        e.stopPropagation();
-
-        const term = v.slice(1).trim();
-        if (!dropdown || !list) return;
-
-        if (!term) {
-            overrideOn = false;
-            console.log(list.innerHTML);
-            // list.innerHTML = '';
-            clearPinyinSuggestions(list);
-            ensureClosed(dropdown);
             return;
         }
 
-        const results = filterByTerm(VISIBLE_ITEMS, term);
+        // 非 @ → 原生逻辑
+        if (v.indexOf('@') !== 0) {
+            if (overrideOn) {
+                overrideOn = false;
+                clearPinyinSuggestions(list);
+                if (dropdown) {
+                    dropdown.classList.remove('__pinyin-active');
+                    dropdown.style.display = '';
+                }
+            }
+            return;
+        }
+
+        // 到这里 = @ 模式
         overrideOn = true;
+
+        var term = v.slice(1).trim();
+        if (!dropdown || !list) return;
+
+        if (!term) {
+            clearPinyinSuggestions(list);
+            dropdown.classList.remove('__pinyin-active');
+            dropdown.style.display = '';
+            return;
+        }
+
+        var results = filterByTerm(VISIBLE_ITEMS, term);
         renderResults(term, results);
+        // 不阻止原生，只是用我们的 __pinyin-item + CSS 覆盖显示
     }
 
     function onKeydownCapture(e) {
         if (!overrideOn) return;
         if (e.key !== 'Enter') return;
-        const { list } = getDom();
+
+        var ctx = getDom();
+        var list = ctx.list;
         if (!list) return;
-        const btns = list.querySelectorAll('.Suggest-suggestion button, .Suggest-suggestion .Button');
-        if (!btns.length) return;
+
+        var btn = list.querySelector('.__pinyin-item button');
+        if (!btn) return;
+
         e.preventDefault();
-        e.stopImmediatePropagation();
-        btns[0].click();
+        e.stopPropagation();
+        btn.click();
     }
+
+    /* ---------------------------------------
+       初始化 & 绑定
+       --------------------------------------- */
 
     function bindInput() {
-        const { input } = getDom();
+        var input = findSpeciesInput();
         if (!input) {
-            log('未找到 species 输入框，放弃绑定');
+            log('未找到 species 输入框');
             return;
         }
-        if (input.__pinyinAtBound) return;
-        input.__pinyinAtBound = true;
-        // ⚠ 用 capture 阶段：我们优先看到 input，然后视情况阻止原生
+        if (input.__pinyinBound) return;
+        input.__pinyinBound = true;
+
+        // capture 阶段先观察 input，再决定是否接管
         input.addEventListener('input', onInputCapture, true);
         input.addEventListener('keydown', onKeydownCapture, true);
-        log('已绑定 @ pinyin 输入监听');
+
+        log('已绑定 @pinyin 监听');
     }
 
-    /* ---------- 初始化 ---------- */
     function init() {
-        log('init start');
-        const input = findSpeciesInput();
-        if (!input) {
-            log('找不到 species 输入框，终止');
-            return;
-        }
-        log('找到 species 输入框:', input.id || input.name || '(no id)');
-
-        loadMappingJSON()
-            .then(raw => {
-                log('pinyin_mapping 已加载，开始构建 Name→Entry 映射');
+        log('初始化 @pinyin 功能...');
+        loadPinyinMapping()
+            .then(function (raw) {
                 buildNameMap(raw);
-                log('加载 pinyin_mapping 项数:', NAME2ENTRY.size);
+                log('pinyin mapping 条目：', NAME2ENTRY.size);
 
                 collectVisibleItems();
                 bindInput();
 
-                const mo = new MutationObserver(() => debouncedCollect());
+                var mo = new MutationObserver(function () {
+                    debouncedCollect();
+                });
                 mo.observe(document.body, { childList: true, subtree: true });
             })
-            .catch(e => console.error(LOG_PREFIX, '初始化失败:', e));
+            .catch(function (e) {
+                console.error(LOG_PREFIX, '初始化失败:', e);
+            });
     }
 
     if (document.readyState === 'loading') {
