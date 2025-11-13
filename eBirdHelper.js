@@ -185,12 +185,12 @@ function updateSpeciesFromLifelistPage() {
         alert(`已与当前生涯清单对齐：${parts.join('，')} 个物种。`);
     }
 
-    console.log(`[eBird Species Tracker] Total species in list: ${updatedList.length}`);
+    // console.log(`[eBird Species Tracker] Total species in list: ${updatedList.length}`);
 }
 
 function getRelevantElements() {
     const url = location.href;
-    console.log('[eBird] 当前页面 URL:', url);
+    // console.log('[eBird] 当前页面 URL:', url);
 
     if (url.includes('/checklist/')) {
         const nodes = document.querySelectorAll('.Observation-species .Heading-main');
@@ -219,7 +219,7 @@ function getRelevantElements() {
         return nodes;
     }
 
-    console.log('[eBird] 未匹配到特定页面类型，返回空数组');
+    // console.log('[eBird] 未匹配到特定页面类型，返回空数组');
     return [];
 }
 
@@ -261,7 +261,7 @@ function ensureHighlightCSS() {
 
 function highlightUnseenSpecies() {
     const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
-    console.log(`[eBird] 当前已见鸟种数量: ${seenBirds.size}`);
+    // console.log(`[eBird] 当前已见鸟种数量: ${seenBirds.size}`);
 
     let targets = [];
     if (ENABLE_PARTIAL_MATCH) {
@@ -272,7 +272,7 @@ function highlightUnseenSpecies() {
         console.log(`[eBird] fallback 使用 .Heading-main 匹配元素数量: ${targets.length}`);
     }*/
 
-    console.log(`[eBird] 最终处理元素数量: ${targets.length}`);
+    // console.log(`[eBird] 最终处理元素数量: ${targets.length}`);
 
     targets.forEach(el => {
         if (markedSet.has(el)) return; // ✅ 避免重复处理
@@ -326,7 +326,7 @@ if (location.href.startsWith('https://ebird.org/lifelist?time=life&r=world')) {
 
             // ✅ 启用 DOM 监听，处理异步内容加载
             const observer = new MutationObserver(() => {
-                console.log('[eBird] DOM 变化触发重新标记');
+                // console.log('[eBird] DOM 变化触发重新标记');
                 highlightUnseenSpecies();
             });
 
@@ -409,22 +409,25 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
     observer.observe(document.body, { childList: true, subtree: true });
 })();
 
+/* === [APPEND ONLY] eBirdHelper: @ pinyin → jump to existing species input (v6) === */
 (() => {
     'use strict';
 
-    // URL 守卫（不影响其它页面中已存在的代码）
-    if (!/^https:\/\/ebird\.org\/submit\/checklist/.test(location.href) && !/^https:\/\/ebird\.org\/edit\/checklist/.test(location.href)) return;
+    const LOG_PREFIX = '[eBird @Pinyin]';
+    const log = (...a) => console.log(LOG_PREFIX, ...a);
 
-    const log = (...a) => console.log('[eBird PinyinTypeahead]', ...a);
-    const debounce = (fn, ms = 120) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
-    const txt = el => (el ? (el.textContent || '').trim() : '');
-    const makeInitials = (p) => (p || '').replace(/[^a-zA-Z]/g, ' ').trim().split(/\s+/).map(w => w[0] || '').join('').toLowerCase();
-
-    const INPUT_SEL = '#jumpToSpp';
     const RAW_URL = 'https://raw.githubusercontent.com/wzy0421/ebirdHelper/dev/pinyin_mapping.json';
-    const CACHE_KEY = 'pinyin_mapping_cache_v2_kvshape';
+    const CACHE_KEY = 'pinyin_mapping_cache_v6';
     const CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
 
+    // lower(commonName) -> { commonName, code?, pinyinLower, initialsLower }
+    let NAME2ENTRY = new Map();
+    // 当前页面可用的物种列表（只包含当前 checklist 上已经有的物种）
+    let VISIBLE_ITEMS = [];
+    // 当前 input 是否处于“由我们接管”的 @ 模式
+    let overrideOn = false;
+
+    /* ---------- 工具 ---------- */
     function gmFetchJSON(url) {
         return new Promise((resolve, reject) => {
             if (typeof GM_xmlhttpRequest === 'function') {
@@ -432,305 +435,468 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
                     method: 'GET',
                     url,
                     headers: { 'Accept': 'application/json' },
-                    onload: (res) => {
+                    onload: res => {
                         try {
                             if (res.status >= 200 && res.status < 300) resolve(JSON.parse(res.responseText));
-                            else reject(new Error(`HTTP ${res.status}`));
+                            else reject(new Error('HTTP ' + res.status));
                         } catch (e) { reject(e); }
                     },
-                    onerror: (e) => reject(e),
+                    onerror: e => reject(e),
                     timeout: 15000,
                     ontimeout: () => reject(new Error('timeout')),
                 });
-            } else {
+            } else if (typeof fetch === 'function') {
                 fetch(url, { credentials: 'omit' })
-                    .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+                    .then(r => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
                     .then(resolve, reject);
+            } else {
+                reject(new Error('No fetch / GM_xmlhttpRequest'));
             }
         });
     }
 
-    async function loadMappingJSON() {
-        try {
-            const cached = 'null'; // JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
-            if (cached && cached.shape === 'kv' && cached.data && (Date.now() - cached.ts < CACHE_TTL)) {
-                log('使用缓存 pinyin_mapping（kv 结构）');
-                return cached.data;
+    function loadMappingJSON() {
+        return new Promise((resolve, reject) => {
+            try {
+                const cachedRaw = localStorage.getItem(CACHE_KEY);
+                if (cachedRaw) {
+                    const cached = JSON.parse(cachedRaw);
+                    if (cached && cached.data && (Date.now() - cached.ts < CACHE_TTL)) {
+                        // log('使用缓存 pinyin_mapping');
+                        resolve(cached.data);
+                        return;
+                    }
+                }
+            } catch (e) {
+                console.warn(LOG_PREFIX, '缓存读取失败:', e);
             }
-        } catch { }
-
-        const data = await gmFetchJSON(RAW_URL); // 期望是 { "Emu": {pinyin, initials}, ... }
-        try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), shape: 'kv', data })); } catch { }
-        return data;
+            gmFetchJSON(RAW_URL)
+                .then(data => {
+                    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), data })); } catch { }
+                    resolve(data);
+                })
+                .catch(reject);
+        });
     }
 
-    // 将 { "Name": {pinyin, initials, latinName?} } 转为：
-    //   MAPPING: [{commonName, latinName, pinyin, initials}, ...]
-    //   NAME2ITEM: Map(lower(commonName) -> item)
-    function buildFromKeyedObject(rawObj) {
-        const arr = [];
+    function makeInitials(p) {
+        return (p || '')
+            .replace(/[^a-zA-Z]/g, ' ')
+            .trim()
+            .split(/\s+/)
+            .map(w => (w ? w[0] : ''))
+            .join('')
+            .toLowerCase();
+    }
+
+    function buildNameMap(rawObj) {
         const map = new Map();
         if (rawObj && typeof rawObj === 'object' && !Array.isArray(rawObj)) {
-            for (const [commonName, v] of Object.entries(rawObj)) {
+            for (const key in rawObj) {
+                if (!Object.prototype.hasOwnProperty.call(rawObj, key)) continue;
+                const commonName = key || '';
                 if (!commonName) continue;
-                const pinyin = (v && v.pinyin ? String(v.pinyin) : '').toLowerCase();
-                const initials = (v && v.initials ? String(v.initials) : makeInitials(pinyin)).toLowerCase();
-                // 允许可选的拉丁名字段（若你将来想加）：
-                const latinName = (v && (v.latinName || v.scientific)) ? String(v.latinName || v.scientific) : '';
-                if (!pinyin && !initials) continue; // 至少要有一个可匹配字段
-                const item = { commonName, latinName, pinyin, initials };
-                arr.push(item);
-                map.set(commonName.toLowerCase(), item);
+                const v = rawObj[key] || {};
+                const pinyin = (v.pinyin ? String(v.pinyin) : '').toLowerCase();
+                const initials = (v.initials ? String(v.initials) : makeInitials(pinyin)).toLowerCase();
+                const code = v.code ? String(v.code).trim() : '';
+                if (!pinyin && !initials) continue;
+                map.set(commonName.toLowerCase(), {
+                    commonName,
+                    code,
+                    pinyinLower: pinyin,
+                    initialsLower: initials,
+                });
             }
         }
-        return { arr, map };
+        NAME2ENTRY = map;
     }
 
-    let visibleSet = new Set();
-    const collectVisible = () => {
-        const found = new Set();
-
-        // 1) 首选：eBird 提交页的标准结构
-        document.querySelectorAll('.SubmitChecklist-species-name span').forEach(span => {
-            let common = '';
-
-            // 先尝试精确取纯英文名：只拼接文本节点（忽略 <em class="sci">…</em>）
-            span.childNodes.forEach(node => {
-                if (node.nodeType === Node.TEXT_NODE) {
-                    common += node.nodeValue || '';
-                }
-            });
-
-            common = (common || '').trim();
-
-            // 兜底：如果上面没拿到（极少数结构不同），再从 .Heading-main / .ChecklistRow-name 补一次
-            if (!common) {
-                const row = span.closest('[data-observation-id]') || span.closest('.Observation') || span.closest('.ChecklistRow');
-                const main =
-                    row?.querySelector('.Heading-main') ||
-                    row?.querySelector('.ChecklistRow-name');
-                if (main) {
-                    common = (main.textContent || '').trim();
-                }
-            }
-
-            if (common) {
-                // 去尾部括注/星号（若英文名后面还有备注）
-                common = common.replace(/\s*\([^)]*\)\s*$/, '').replace(/\*+$/, '').trim();
-                // 去可能的中文括注（保险处理）
-                common = common.replace(/（.*?）|\(.*?[\u4e00-\u9fa5].*?\)/g, '').trim();
-                if (common) found.add(common.toLowerCase());
-            }
-        });
-
-        // 2) 若上面路径没有匹配到（某些布局），再尝试其它常见容器
-        if (found.size === 0) {
-            document.querySelectorAll('[data-observation-id] .Heading-main, .ChecklistRow .ChecklistRow-name').forEach(el => {
-                // 只取纯文本节点（避免子元素带学名/附注）
-                let common = '';
-                el.childNodes.forEach(node => {
-                    if (node.nodeType === Node.TEXT_NODE) {
-                        common += node.nodeValue || '';
-                    }
-                });
-                common = (common || '').trim()
-                    .replace(/\s*\([^)]*\)\s*$/, '')
-                    .replace(/\*+$/, '')
-                    .replace(/（.*?）|\(.*?[\u4e00-\u9fa5].*?\)/g, '')
-                    .trim();
-                if (common) found.add(common.toLowerCase());
-            });
-        }
-
-        visibleSet = found;
-        console.log('[eBird PinyinTypeahead] 可见物种数:', visibleSet.size);
-    };
-
+    /* ---------- DOM 辅助 ---------- */
+    function findSpeciesInput() {
+        return (
+            document.querySelector('#jumpToSpp') ||
+            document.querySelector('input.Suggest-input')
+        );
+    }
 
     function getDom() {
-        const input = document.querySelector(INPUT_SEL);
-        if (!input) return { input: null, dropdown: null, list: null };
+        const input = findSpeciesInput();
+        if (!input) return { input: null, dropdown: null, list: null, emptyTpl: null };
         const dropdownId = input.getAttribute('aria-controls') || 'Suggest-dropdown-jumpToSpp';
-        const dropdown = document.getElementById(dropdownId) || document.querySelector('#Suggest-dropdown-jumpToSpp') || null;
+        const dropdown =
+            document.getElementById(dropdownId) ||
+            document.querySelector('#Suggest-dropdown-jumpToSpp') ||
+            null;
         const list = dropdown ? dropdown.querySelector('.Suggest-suggestions') : null;
-        return { input, dropdown, list };
+        const emptyTpl = dropdown ? dropdown.querySelector('.Suggest-empty') : null;
+        return { input, dropdown, list, emptyTpl };
     }
+
     function ensureOpen(dropdown) {
         if (!dropdown) return;
-        dropdown.style.display = '';
-        dropdown.parentElement?.setAttribute('aria-expanded', 'true');
+        dropdown.style.display = 'block';
+        if (dropdown.parentElement) dropdown.parentElement.setAttribute('aria-expanded', 'true');
     }
+
     function ensureClosed(dropdown) {
         if (!dropdown) return;
-        dropdown.style.display = 'none';
-        dropdown.parentElement?.setAttribute('aria-expanded', 'false');
+        dropdown.style.removeProperty('display');
+        if (dropdown.parentElement) dropdown.parentElement.removeAttribute('aria-expanded');
     }
 
-    function makeItemNode(item, onPick) {
-        const wrap = document.createElement('div');
-        wrap.className = 'Suggest-suggestion';
-        wrap.setAttribute('role', 'option');
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'Button Button--link u-text-left u-block';
-        btn.innerHTML = `
-      <div class="u-text-3">${item.commonName}</div>
-      ${item.latinName ? `<div class="u-text-4 u-muted">${item.latinName}</div>` : ''}
-    `;
-        btn.addEventListener('mousedown', (e) => e.preventDefault());
-        btn.addEventListener('click', () => onPick(item.commonName));
-        wrap.appendChild(btn);
-        return wrap;
+    /* ---------- 提取英文名 & 高亮跳转 ---------- */
+    function extractCommonNameFromSpan(span) {
+        let raw = '';
+        span.childNodes.forEach(node => {
+            if (node.nodeType === Node.TEXT_NODE) raw += node.textContent || '';
+        });
+        raw = raw.trim();
+        // Southern Cassowary(双垂鹤鸵) → Southern Cassowary
+        return raw.replace(/\(.*$/, '').trim();
     }
 
-    function renderList(listEl, dropdown, items, onPick) {
-        if (!listEl || !dropdown) return;
-        listEl.innerHTML = '';
-        if (!items.length) {
-            const empty = dropdown.querySelector('.Suggest-empty');
-            listEl.appendChild(empty ? empty.cloneNode(true) : document.createElement('div'));
-        } else {
-            items.forEach(it => listEl.appendChild(makeItemNode(it, onPick)));
+    // 高亮样式
+    (function injectHighlightCSS() {
+        const css =
+            '.__pinyin_jump_flash{' +
+            'outline:3px solid rgba(255,200,0,.9);' +
+            'outline-offset:2px;' +
+            'animation:__pinyin_flash 1.0s ease-out 1;' +
+            'border-radius:6px;' +
+            '}' +
+            '@keyframes __pinyin_flash{' +
+            '0%{outline-color:rgba(255,200,0,1);}' +
+            '100%{outline-color:rgba(255,200,0,0);}' +
+            '}';
+        const s = document.createElement('style');
+        s.textContent = css;
+        document.documentElement.appendChild(s);
+    })();
+
+    function findCountInputByCode(code) {
+        if (!code) return null;
+        let el = document.getElementById(code);
+        if (el) return el;
+        el = document.querySelector('input.sc[name^="sp[\'' + code + '\']"]');
+        if (el) return el;
+        el = document.querySelector('input.sc[name*="' + code + '"]');
+        return el;
+    }
+
+    function jumpToItem(item) {
+        let input = null;
+        let rowEl = null;
+
+        if (item.code) {
+            input = findCountInputByCode(item.code);
+            if (input) {
+                rowEl =
+                    input.closest('[data-observation-id]') ||
+                    input.closest('.SubmitChecklist-species-name') ||
+                    input.closest('tr') ||
+                    input;
+            }
         }
-        ensureOpen(dropdown);
+
+        if (!rowEl) {
+            const nodes = document.querySelectorAll('.SubmitChecklist-species-name[id^="name_"] span');
+            const target = item.commonName.toLowerCase();
+            nodes.forEach(span => {
+                if (rowEl) return;
+                const cn = extractCommonNameFromSpan(span).toLowerCase();
+                if (cn === target) {
+                    rowEl = span.closest('.SubmitChecklist-species-name') || span;
+                    const row = rowEl.closest('tr, .SubmitChecklist-row, .ChecklistRow') || rowEl;
+                    input = row.querySelector('input.sc') || row.querySelector('input, textarea, [contenteditable="true"]');
+                }
+            });
+        }
+
+        if (!rowEl || !input) return false;
+
+        rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        rowEl.classList.add('__pinyin_jump_flash');
+        setTimeout(() => rowEl.classList.remove('__pinyin_jump_flash'), 1000);
+
+        input.focus();
+        try { if (typeof input.select === 'function') input.select(); } catch { }
+        return true;
     }
 
-    function pickCommonName(commonName) {
-        const { input, dropdown } = getDom();
-        if (!input) return;
-        input.value = commonName;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
-        ensureClosed(dropdown);
+    /* ---------- 构建本页可用物种列表（通过 name_xxx DOM） ---------- */
+    function collectVisibleItems() {
+        const items = [];
+        const seen = new Set();
+        const nodes = document.querySelectorAll('.SubmitChecklist-species-name[id^="name_"]');
+
+        nodes.forEach(div => {
+            const id = div.id || '';
+            const code = id.replace(/^name_/, '').trim();
+            if (!code) return;
+
+            const span = div.querySelector('span');
+            if (!span) return;
+
+            const commonName = extractCommonNameFromSpan(span);
+            const lower = commonName.toLowerCase();
+            const base = NAME2ENTRY.get(lower);
+            if (!base) return;
+            if (seen.has(lower)) return;
+            seen.add(lower);
+
+            items.push({
+                commonName: base.commonName,
+                code,
+                pinyinLower: base.pinyinLower,
+                initialsLower: base.initialsLower,
+            });
+        });
+
+        VISIBLE_ITEMS = items;
+        // log('可用于 @ 匹配的物种数:', VISIBLE_ITEMS.length);
     }
 
-    let MAPPING = [];          // Array<{commonName, latinName, pinyin, initials}>
-    let NAME2ITEM = new Map(); // Map<lowerName, item>
+    const debouncedCollect = (() => {
+        let t = null;
+        return () => {
+            if (t) clearTimeout(t);
+            t = setTimeout(collectVisibleItems, 150);
+        };
+    })();
 
-    function byTerm(arr, term) {
+    /* ---------- term 过滤 ---------- */
+    function filterByTerm(arr, term) {
         const t = (term || '').toLowerCase().trim();
-        if (!t) {
-            // 空输入时不展示庞大列表：按需返回空数组
-            return [];
-        }
+        if (!t) return [];
 
         const exact = [];
         const starts = [];
         const contains = [];
 
-        for (const it of arr) {
-            const p = (it.pinyin || '').toLowerCase();
-            const ini = (it.initials || '').toLowerCase();
+        for (let i = 0; i < arr.length; i++) {
+            const it = arr[i];
+            const p = it.pinyinLower || '';
+            const ini = it.initialsLower || '';
 
             const isExact = (p === t) || (ini === t);
-            if (isExact) {
-                exact.push(it);
-                continue;
-            }
+            if (isExact) { exact.push(it); continue; }
 
-            const isStart = p.startsWith(t) || ini.startsWith(t);
-            if (isStart) {
-                starts.push(it);
-                continue;
-            }
+            const isStart = p.indexOf(t) === 0 || ini.indexOf(t) === 0;
+            if (isStart) { starts.push(it); continue; }
 
-            const isContains = p.includes(t) || ini.includes(t);
-            if (isContains) {
-                contains.push(it);
-            }
+            const isContains = p.indexOf(t) !== -1 || ini.indexOf(t) !== -1;
+            if (isContains) contains.push(it);
         }
 
-        // 规则 1：短输入（<=2）且匹配总数 > 5，仅显示精确匹配
         if (t.length <= 2) {
             const total = exact.length + starts.length + contains.length;
-            if (total > 5) {
-                // 只显示精确匹配（即使为空也按规则为空）
-                return exact.slice(0, 50);
+            if (total > 5) return exact.slice(0, 50);
+        }
+        return exact.concat(starts, contains).slice(0, 50);
+    }
+
+    /* ---------- dropdown 渲染 ---------- */
+    function makeItemNode(item, onPick) {
+        const { dropdown } = getDom();
+        const proto = dropdown && dropdown.querySelector('.Suggest-suggestion');
+        let wrap, btn;
+
+        if (proto) {
+            wrap = proto.cloneNode(true);
+            wrap.classList.remove('is-active');
+            btn = wrap.querySelector('button, .Button');
+            if (btn) {
+                btn.innerHTML = '';
+                const main = document.createElement('div');
+                main.className = 'u-text-3';
+                main.textContent = item.commonName;
+                btn.appendChild(main);
+                if (item.code) {
+                    const sub = document.createElement('div');
+                    sub.className = 'u-text-4 u-muted';
+                    sub.textContent = item.code;
+                    btn.appendChild(sub);
+                }
             }
         }
 
-        // 规则 2：长输入（>2）或短输入但总数<=5：显示全部（精确优先，其次前缀、包含）
-        return [...exact, ...starts, ...contains].slice(0, 50);
-    }
-
-    function matchLocal(term) {
-        const cands = [];
-        for (const lowerName of visibleSet) {
-            const mapped = NAME2ITEM.get(lowerName);
-            if (mapped) cands.push(mapped);
+        if (!wrap) {
+            wrap = document.createElement('div');
+            wrap.className = 'Suggest-suggestion';
+            btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'Button Button--link u-text-left u-block';
+            btn.innerHTML =
+                '<div class="u-text-3">' + item.commonName + '</div>' +
+                (item.code ? '<div class="u-text-4 u-muted">' + item.code + '</div>' : '');
+            wrap.appendChild(btn);
         }
-        return byTerm(cands, term);
-    }
-    function matchGlobal(term) {
-        return byTerm(MAPPING, term);
+        wrap.classList.add('__pinyin-item');
+        btn.addEventListener('mousedown', e => e.preventDefault());
+        btn.addEventListener('click', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            onPick(item);
+        });
+
+        return wrap;
     }
 
-    let overrideOn = false;
+    function clearPinyinSuggestions(list) {
+        if (!list) return;
+        list.querySelectorAll('.__pinyin-item').forEach(n => n.remove());
 
+    }
+
+    function renderResults(term, results) {
+        const { dropdown, list, emptyTpl } = getDom();
+        if (!dropdown || !list) return;
+
+        // list.innerHTML = '';
+        clearPinyinSuggestions(list);
+        if (!results.length) {
+            if (emptyTpl) {
+                list.appendChild(emptyTpl.cloneNode(true));
+            } else {
+                const div = document.createElement('div');
+                div.textContent = 'No matches for @' + term + '. Remove "@" to use Add species.';
+                list.appendChild(div);
+            }
+            ensureOpen(dropdown);
+            return;
+        }
+
+        results.forEach(it => list.appendChild(makeItemNode(it, pickItem)));
+        ensureOpen(dropdown);
+    }
+
+    /* ---------- 点击候选 ---------- */
+    function pickItem(item) {
+        const { input, dropdown, list } = getDom();
+        if (!input) return;
+
+        overrideOn = false;
+        // if (list) list.innerHTML = '';
+        if (list) clearPinyinSuggestions(list);
+        ensureClosed(dropdown);
+
+        const jumped = jumpToItem(item);
+
+        // 清空搜索框，这次 input（不以 @ 开头）交给原生
+        input.value = '';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+
+        if (!jumped) {
+            input.value = item.commonName;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    }
+
+    /* ---------- 事件：用 input(capture) 拦截 @，其它全部放行 ---------- */
     function onInputCapture(e) {
         const { input, dropdown, list } = getDom();
-        if (!input || !dropdown || !list) return;
-
+        if (!input) return;
         const v = input.value || '';
-        if (v.startsWith('@@')) {
-            overrideOn = true;
-            e.stopImmediatePropagation();
-            const term = v.slice(2).trim();
-            renderList(list, dropdown, matchGlobal(term), pickCommonName);
-        } else if (v.startsWith('@')) {
-            overrideOn = true;
-            e.stopImmediatePropagation();
-            const term = v.slice(1).trim();
-            renderList(list, dropdown, matchLocal(term), pickCommonName);
-        } else {
+
+        // @@：完全交给原生
+        if (v.indexOf('@@') === 0) {
             if (overrideOn) {
                 overrideOn = false;
-                list.innerHTML = '';
+                clearPinyinSuggestions(list);      // 只清掉我们自己的 @ 结果
+                // 不再关闭 dropdown，让原生自己处理
             }
-            // 交还原生
+            return; // 不拦截
         }
+
+        // 2) 非 @：退出我们接管，原生负责 dropdown
+        if (v.indexOf('@') !== 0) {
+            if (overrideOn) {
+                overrideOn = false;
+                clearPinyinSuggestions(list);      // 同样，只删我们自己的
+            }
+            return; // 不拦截
+        }
+
+        console.log(3);
+
+        // 走到这里 = 真正的 @ 模式：拦截原生 typeahead 处理这次输入
+        e.stopImmediatePropagation();
+        e.stopPropagation();
+
+        const term = v.slice(1).trim();
+        if (!dropdown || !list) return;
+
+        if (!term) {
+            overrideOn = false;
+            console.log(list.innerHTML);
+            // list.innerHTML = '';
+            clearPinyinSuggestions(list);
+            ensureClosed(dropdown);
+            return;
+        }
+
+        const results = filterByTerm(VISIBLE_ITEMS, term);
+        overrideOn = true;
+        renderResults(term, results);
     }
 
     function onKeydownCapture(e) {
         if (!overrideOn) return;
+        if (e.key !== 'Enter') return;
         const { list } = getDom();
         if (!list) return;
-        const items = [...list.querySelectorAll('.Suggest-suggestion button')];
-        if (!items.length) return;
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            items[0].click();
-        }
+        const btns = list.querySelectorAll('.Suggest-suggestion button, .Suggest-suggestion .Button');
+        if (!btns.length) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        btns[0].click();
     }
 
     function bindInput() {
         const { input } = getDom();
-        if (!input || input.__pinyinBound) return;
-        input.__pinyinBound = true;
+        if (!input) {
+            log('未找到 species 输入框，放弃绑定');
+            return;
+        }
+        if (input.__pinyinAtBound) return;
+        input.__pinyinAtBound = true;
+        // ⚠ 用 capture 阶段：我们优先看到 input，然后视情况阻止原生
         input.addEventListener('input', onInputCapture, true);
         input.addEventListener('keydown', onKeydownCapture, true);
-        log('已绑定 species 输入');
+        log('已绑定 @ pinyin 输入监听');
     }
 
-    (async () => {
-        try {
-            const rawKV = await loadMappingJSON();                // 期望是对象而非数组
-            const { arr, map } = buildFromKeyedObject(rawKV);     // 转换为数组与索引
-            MAPPING = arr;
-            NAME2ITEM = map;
-            log('pinyin mapping (kv) 条数：', MAPPING.length);
-
-            collectVisible();
-            bindInput();
-
-            const mo = new MutationObserver(debounce(() => {
-                collectVisible();
-                bindInput();
-            }, 150));
-            mo.observe(document.body, { childList: true, subtree: true });
-        } catch (e) {
-            console.error('[eBird PinyinTypeahead] 加载/初始化失败：', e);
+    /* ---------- 初始化 ---------- */
+    function init() {
+        log('init start');
+        const input = findSpeciesInput();
+        if (!input) {
+            log('找不到 species 输入框，终止');
+            return;
         }
-    })();
+        log('找到 species 输入框:', input.id || input.name || '(no id)');
+
+        loadMappingJSON()
+            .then(raw => {
+                log('pinyin_mapping 已加载，开始构建 Name→Entry 映射');
+                buildNameMap(raw);
+                log('加载 pinyin_mapping 项数:', NAME2ENTRY.size);
+
+                collectVisibleItems();
+                bindInput();
+
+                const mo = new MutationObserver(() => debouncedCollect());
+                mo.observe(document.body, { childList: true, subtree: true });
+            })
+            .catch(e => console.error(LOG_PREFIX, '初始化失败:', e));
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
 
 })();
+
