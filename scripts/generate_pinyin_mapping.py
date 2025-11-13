@@ -60,17 +60,12 @@ for _, row in df.iterrows():
     # 用 pypinyin 得到全拼和首字母
     pinyin, initials = get_pinyin_and_initials(cn_name)
 
-    # 组装最终的 name 字段
-    if sci:
-        full_eng_sci = f"{eng} - {sci}"
-    else:
-        full_eng_sci = eng
-
     mapping[eng] = {
         "pinyin": pinyin,
         "initials": initials,
         "code": code,
-        "name": full_eng_sci,
+        "name": eng,
+        "latin": sci,
     }
 
 # 3. 存成 json 文件
