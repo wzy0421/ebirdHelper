@@ -719,9 +719,9 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
                 exact.push(it);
             } else if (p.indexOf(t) === 0 || ini.indexOf(t) === 0) {
                 starts.push(it);
-            } else if (p.indexOf(t) !== -1 || ini.indexOf(t) !== -1) {
+            } /*else if (p.indexOf(t) !== -1 || ini.indexOf(t) !== -1) {
                 contains.push(it);
-            }
+            } */
         }
 
         if (t.length <= 2) {
@@ -751,25 +751,31 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
         var ctx = getDom();
         var dropdown = ctx.dropdown;
         var proto = dropdown ? dropdown.querySelector('.Suggest-suggestion') : null;
-        var wrap, btn;
+        var wrap;
 
         if (proto) {
+            // 克隆一个现有的 suggestion，保留 role 等属性
             wrap = proto.cloneNode(true);
             wrap.classList.remove('is-active');
-            btn = wrap.querySelector('button, .Button');
-            if (btn) btn.innerHTML = '';
+
+            // 清空子节点，避免保留原内容
+            while (wrap.firstChild) {
+                wrap.removeChild(wrap.firstChild);
+            }
+
+            // 避免重复 id
+            wrap.removeAttribute('id');
         } else {
+            // 没有原生节点就自己建一个
             wrap = document.createElement('div');
             wrap.className = 'Suggest-suggestion';
-            btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'Button Button--link u-text-left u-block';
-            wrap.appendChild(btn);
+            wrap.setAttribute('role', 'option');
         }
 
+        // 标记一下这是拼音插入的
         wrap.classList.add('__pinyin-item');
 
-        // ==== 关键：改成和 eBird 原生一致的结构 ====
+        // === 和原生一致的结构 ===
         // <span class="Suggestion-text">
         //   <em data-replaced="1">Emu(鸸鹋)</em>
         //   <span class="SciName">Dromaius novaehollandiae</span>
@@ -781,30 +787,28 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
         var em = document.createElement('em');
         em.setAttribute('data-replaced', '1');
 
-        // 英文名：从 pinyin_map 的 name 字段来；没有则退回 commonName
-        var engName = item.engName || item.commonName;
-
-        // 中文名：从 birdMap 里抽出括号内部分，如果有的话
-        var cnName = '';
-        if (birdMap && birdMap[engName]) {
-            var m = /\(([^()]+)\)/.exec(birdMap[engName]);
-            if (m) cnName = m[1];
-        }
-
+        // 这里的 label 可以是你已经拼好的 "Emu(鸸鹋)"
+        // 如果你在别处已经算好了，就挂在 item.label 上；
+        // 没有的话就用 commonName 或 name 自己拼
+        var engName = item.name || item.commonName || '';
+        var cnName = item.cnName || ''; // 如果你有中文名字段，就用它
         em.textContent = cnName ? (engName + '(' + cnName + ')') : engName;
 
-        var sci = document.createElement('span');
-        sci.className = 'SciName';
-        sci.textContent = item.latinName || '';
-
         container.appendChild(em);
-        container.appendChild(document.createTextNode(' '));
-        container.appendChild(sci);
 
-        btn.appendChild(container);
+        // SciName：如果你已经在 pinyin_map 里有 latin name，就提前塞到 item.latinName
+        if (item.latinName) {
+            container.appendChild(document.createTextNode(' '));
+            var sci = document.createElement('span');
+            sci.className = 'SciName';
+            sci.textContent = item.latinName;
+            container.appendChild(sci);
+        }
 
-        // 点击逻辑保持不变
-        btn.addEventListener('click', function (e) {
+        wrap.appendChild(container);
+
+        // 用 mousedown 可以避免点击时输入框先 blur
+        wrap.addEventListener('mousedown', function (e) {
             e.preventDefault();
             e.stopPropagation();
             onPick(item);
