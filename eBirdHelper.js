@@ -525,12 +525,19 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
             var p = String(v.pinyin || '').toLowerCase();
             var i = String(v.initials || makeInitials(p)).toLowerCase();
             var code = v.code ? String(v.code).trim() : '';
+
+            // 这里假设 pinyin_map 里有 name（纯英文名）和 latin（拉丁名）两个字段
+            var engName = v.name ? String(v.name).trim() : key;
+            var latin = v.latin ? String(v.latin).trim() : (v.latin_name ? String(v.latin_name).trim() : '');
+
             if (!p && !i) continue;
             map.set(String(key).toLowerCase(), {
-                commonName: key,
-                code: code,
+                commonName: key,       // e.g. "Emu"
+                code: code,            // emu1
                 pinyinLower: p,
-                initialsLower: i
+                initialsLower: i,
+                engName: engName,      // 纯英文名
+                latinName: latin      // 拉丁名
             });
         }
         NAME2ENTRY = map;
@@ -673,7 +680,9 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
                 commonName: entry.commonName,
                 code: code,
                 pinyinLower: entry.pinyinLower,
-                initialsLower: entry.initialsLower
+                initialsLower: entry.initialsLower,
+                engName: entry.engName || entry.commonName,
+                latinName: entry.latinName || ''
             });
         }
 
@@ -760,18 +769,41 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
 
         wrap.classList.add('__pinyin-item');
 
-        var main = document.createElement('div');
-        main.className = 'u-text-3';
-        main.textContent = item.commonName;
-        btn.appendChild(main);
+        // ==== 关键：改成和 eBird 原生一致的结构 ====
+        // <span class="Suggestion-text">
+        //   <em data-replaced="1">Emu(鸸鹋)</em>
+        //   <span class="SciName">Dromaius novaehollandiae</span>
+        // </span>
 
-        if (item.code) {
-            var sub = document.createElement('div');
-            sub.className = 'u-text-4 u-muted';
-            sub.textContent = item.code;
-            btn.appendChild(sub);
+        var container = document.createElement('span');
+        container.className = 'Suggestion-text';
+
+        var em = document.createElement('em');
+        em.setAttribute('data-replaced', '1');
+
+        // 英文名：从 pinyin_map 的 name 字段来；没有则退回 commonName
+        var engName = item.engName || item.commonName;
+
+        // 中文名：从 birdMap 里抽出括号内部分，如果有的话
+        var cnName = '';
+        if (birdMap && birdMap[engName]) {
+            var m = /\(([^()]+)\)/.exec(birdMap[engName]);
+            if (m) cnName = m[1];
         }
 
+        em.textContent = cnName ? (engName + '(' + cnName + ')') : engName;
+
+        var sci = document.createElement('span');
+        sci.className = 'SciName';
+        sci.textContent = item.latinName || '';
+
+        container.appendChild(em);
+        container.appendChild(document.createTextNode(' '));
+        container.appendChild(sci);
+
+        btn.appendChild(container);
+
+        // 点击逻辑保持不变
         btn.addEventListener('click', function (e) {
             e.preventDefault();
             e.stopPropagation();
