@@ -16,7 +16,7 @@ const HIGHLIGHT_ENDEMIC = true;
 const ENABLE_FULL_MATCH = false; // 控制是否在整页匹配所有鸟种
 const ENABLE_PARTIAL_MATCH = true; // 控制是否仅在特定区域匹配
 
-const RAW_BASE = 'https://raw.githubusercontent.com/wzy0421/ebirdHelper/main/';
+const RAW_BASE = 'https://raw.githubusercontent.com/wzy0421/ebirdHelper/dev/';
 const FILES = {
     CN_MAP: 'birdMap.json',
     ENDEMIC_MAP: 'endemicMap.json',
@@ -719,7 +719,7 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
                 exact.push(it);
             } else if (p.indexOf(t) === 0 || ini.indexOf(t) === 0) {
                 starts.push(it);
-            } /*else if (p.indexOf(t) !== -1 || ini.indexOf(t) !== -1) {
+            } /* else if (p.indexOf(t) !== -1 || ini.indexOf(t) !== -1) {
                 contains.push(it);
             } */
         }
@@ -791,7 +791,11 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
         // 如果你在别处已经算好了，就挂在 item.label 上；
         // 没有的话就用 commonName 或 name 自己拼
         var engName = item.name || item.commonName || '';
-        var cnName = item.cnName || ''; // 如果你有中文名字段，就用它
+        var cnName = '';
+        if (birdMap && birdMap[engName]) {
+            var m = /\(([^()]+)\)/.exec(birdMap[engName]);
+            if (m) cnName = m[1];
+        }
         em.textContent = cnName ? (engName + '(' + cnName + ')') : engName;
 
         container.appendChild(em);
