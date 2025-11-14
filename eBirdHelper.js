@@ -16,7 +16,7 @@ const HIGHLIGHT_ENDEMIC = true;
 const ENABLE_FULL_MATCH = false; // 控制是否在整页匹配所有鸟种
 const ENABLE_PARTIAL_MATCH = true; // 控制是否仅在特定区域匹配
 
-const RAW_BASE = 'https://raw.githubusercontent.com/wzy0421/ebirdHelper/dev/';
+const RAW_BASE = 'https://raw.githubusercontent.com/wzy0421/ebirdHelper/main/';
 const FILES = {
     CN_MAP: 'birdMap.json',
     ENDEMIC_MAP: 'endemicMap.json',
