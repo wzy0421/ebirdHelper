@@ -1,11 +1,18 @@
 // ==UserScript==
 // @name         eBird 添加中文鸟名
 // @namespace    http://tampermonkey.net/
-// @version      2.0.0
+// @version      2.0.1
 // @description  在 eBird 网站上将鸟名改为“英文名(中文名)”格式
 // @match        https://ebird.org/*
 // @grant        GM.getValue
 // ==/UserScript==
+
+/**
+ * eBird Helper 主脚本。
+ * 功能覆盖：缓存 Github 上的鸟名映射、在页面上高亮未见鸟种、
+ * 批量在页面中替换为“英文(中文)”格式，以及在 eBird 输入框中提供 @pinyin 快速匹配。
+ * 结构上按照“数据缓存 → 高亮 → 文本替换 → @pinyin”划分，方便日后维护。
+ */
 
 const STORAGE_KEY = 'ebirdSpeciesList';
 const HIGHLIGHT_COLOR = '#A35F00';
@@ -27,7 +34,7 @@ const CACHE_KEYS = {
     CN_MAP: 'ebh_cn_map_cache_v1',
     ENDEMIC_MAP: 'ebh_endemic_map_cache_v1',
 };
-const DEFAULT_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 7 天
+const DEFAULT_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 1 年缓存，避免频繁请求
 
 /**
  * 读取 JSON + ETag 条件刷新 + 本地缓存（Tampermonkey Storage）
@@ -83,6 +90,20 @@ async function fetchAndStore(cacheKey, url, etag) {
     return data;
 }
 
+/** 构建常用工具函数 */
+function escapeRegExp(text = '') {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildBirdNamePatternFromMap(map = {}) {
+    const birdNames = Object.keys(map)
+        .filter(name => name && name.length > 0)
+        .sort((a, b) => b.length - a.length); // 长名优先，避免局部匹配
+
+    if (birdNames.length === 0) return null;
+    return new RegExp(`\\b(${birdNames.map(escapeRegExp).join('|')})\\b`, 'g');
+}
+
 /** 对外暴露的获取函数 */
 const dataStore = {
     /** 获取英文名 -> 中文名（IOC）Map（对象或 Map 均可用） */
@@ -108,9 +129,11 @@ const dataStore = {
 };
 
 
-const birdMap = await dataStore.getBirdNameMap();
-
-const endemicMap = await dataStore.getEndemicMap();
+const [birdMap, endemicMap] = await Promise.all([
+    dataStore.getBirdNameMap(),
+    dataStore.getEndemicMap()
+]);
+const birdNamePattern = buildBirdNamePatternFromMap(birdMap);
 const markedSet = new WeakSet(); // ✅ 缓存机制：已处理元素集合
 
 const style = document.createElement('style');
@@ -124,15 +147,21 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 
+/** 把“已见鸟种”写入 localStorage，供后续高亮逻辑复用 */
 function saveSpeciesList(speciesList) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(speciesList));
 }
 
+/** 读取 localStorage 中的“已见鸟种” */
 function loadSpeciesList() {
     const data = localStorage.getItem(STORAGE_KEY);
     return data ? JSON.parse(data) : [];
 }
 
+/**
+ * 解析生涯列表页面（/lifelist）并把页面上的种类同步到本地缓存。
+ * 这样高亮逻辑就可以在其它页面使用一致的数据源。
+ */
 function updateSpeciesFromLifelistPage() {
     const existing = loadSpeciesList(); // [{ commonName, latinName }, ...]
     const existingSet = new Set(existing.map(s => s.commonName));
@@ -223,6 +252,7 @@ function getRelevantElements() {
     return [];
 }
 
+/** 统一处理原始文本，剥离星号、拉丁名、已有括号等噪音 */
 function extractCleanName(text) {
     // return text.replace(/\(.*?\)\*?$/, '').replace(/\*/g, '').trim();
     // return text.replace(/\s*\(.*?\).*$/, '').replace(/\*/g, '').trim();
@@ -233,6 +263,7 @@ function extractCleanName(text) {
         .trim();
 }
 
+/** 安装一次性 CSS，使得 data-ebird-unseen 的节点能自定义颜色 */
 function ensureHighlightCSS() {
     if (document.getElementById('ebird-highlights')) return;
 
@@ -259,6 +290,10 @@ function ensureHighlightCSS() {
     (document.head || document.documentElement).appendChild(style);
 }
 
+/**
+ * 在各类 eBird 页面上高亮未见过的鸟种，并根据 endemicMap 区分颜色。
+ * 会跳过 sp./hybrid/slash 等无效条目。
+ */
 function highlightUnseenSpecies() {
     const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
     // console.log(`[eBird] 当前已见鸟种数量: ${seenBirds.size}`);
@@ -315,18 +350,26 @@ function highlightUnseenSpecies() {
     });
 }
 
-if (location.href.startsWith('https://ebird.org/lifelist?time=life&r=world')) {
-    window.addEventListener('load', () => {
-        setTimeout(updateSpeciesFromLifelistPage, 2000);
-    });
-} else {
+/** lifelist 页面专用：只同步物种，不做 DOM 替换 */
+function isLifelistPage() {
+    return location.href.startsWith('https://ebird.org/lifelist?time=life&r=world');
+}
+
+/** 非 lifelist 页面在 load 后启动高亮 + MutationObserver */
+function bootstrapHighlighting() {
+    if (isLifelistPage()) {
+        window.addEventListener('load', () => {
+            setTimeout(updateSpeciesFromLifelistPage, 2000);
+        });
+        return;
+    }
+
     window.addEventListener('load', () => {
         setTimeout(() => {
             highlightUnseenSpecies();
 
-            // ✅ 启用 DOM 监听，处理异步内容加载
+            // ✅ 监听动态内容：新节点出现时再次尝试高亮
             const observer = new MutationObserver(() => {
-                // console.log('[eBird] DOM 变化触发重新标记');
                 highlightUnseenSpecies();
             });
 
@@ -338,38 +381,22 @@ if (location.href.startsWith('https://ebird.org/lifelist?time=life&r=world')) {
     });
 }
 
-
-const highlightUnknown = true;
-
+bootstrapHighlighting();
+/** 用于“整页替换”功能，记录已经见过的鸟种，避免重复加星 */
 const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
-
-
-
-
 
 
 (function () {
     'use strict';
 
-    const names = Object.keys(birdMap).sort((a, b) => b.length - a.length);
-    const pattern = new RegExp(`\\b(${names.map(n => n.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|')})\\b`, 'g');
+    if (!birdNamePattern) {
+        console.warn('[eBird] birdMap 为空，跳过整页替换逻辑');
+        return;
+    }
 
+    /** 遍历文本节点并把“英文名”替换成“英文(中文)” */
     function walkAndReplace(node) {
         const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null, false);
-
-        // 关键修改：按名称长度从长到短排序，保证更长的复合名（如 Magpie-Robin）优先匹配
-        const birdNames = Object.keys(birdMap)
-            .filter(name => name && name.length > 0)
-            .sort((a, b) => b.length - a.length);
-
-        if (birdNames.length === 0) return;
-
-        // 构建正则：\b(Oriental Magpie-Robin|Oriental Magpie|...)\b
-        // 由于上面已按长度降序，存在重叠时会优先匹配更长的条目
-        const pattern = new RegExp(
-            `\\b(${birdNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`,
-            'g'
-        );
 
         let n;
         while ((n = walker.nextNode())) {
@@ -378,10 +405,8 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
 
             const oldText = n.nodeValue;
 
-            const newText = oldText.replace(pattern, match => {
+            const newText = oldText.replace(birdNamePattern, match => {
                 if (!birdMap[match]) return match;
-                const seen = seenBirds.has(match);
-                // return `${birdMap[match]}${!seen ? '*' : ''}`;
                 return `${birdMap[match]}`;
             });
 
