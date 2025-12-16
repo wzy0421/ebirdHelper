@@ -5,8 +5,8 @@
 // @description  在 eBird 网站上将鸟名改为“英文名(中文名)”格式
 // @match        https://ebird.org/*
 // @grant        GM.getValue
-// @updateURL  https://raw.githubusercontent.com/wzy0421/ebirdHelper/dev/eBirdHelper.js
-// @downloadURL  https://raw.githubusercontent.com/wzy0421/ebirdHelper/dev/eBirdHelper.js
+// @updateURL  https://raw.githubusercontent.com/wzy0421/ebirdHelper/main/eBirdHelper.js
+// @downloadURL  https://raw.githubusercontent.com/wzy0421/ebirdHelper/main/eBirdHelper.js
 // ==/UserScript==
 
 /**
