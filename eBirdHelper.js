@@ -131,10 +131,14 @@ const dataStore = {
 };
 
 
+// @ebh-inline-data-start
+// This block is replaced by scripts/build_single_file.js to produce the
+// offline-friendly single-file build with birdMap/endemicMap inlined.
 const [birdMap, endemicMap] = await Promise.all([
     dataStore.getBirdNameMap(),
     dataStore.getEndemicMap()
 ]);
+// @ebh-inline-data-end
 const birdNamePattern = buildBirdNamePatternFromMap(birdMap);
 const markedSet = new WeakSet(); // ✅ 缓存机制：已处理元素集合
 

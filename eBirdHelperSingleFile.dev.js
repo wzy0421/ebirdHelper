@@ -5,8 +5,8 @@
 // @description  在 eBird 网站上将鸟名改为“英文名(中文名)”格式
 // @match        https://ebird.org/*
 // @grant        GM.getValue
-// @updateURL  https://raw.githubusercontent.com/wzy0421/ebirdHelper/main/eBirdHelperSingleFile.js
-// @downloadURL  https://raw.githubusercontent.com/wzy0421/ebirdHelper/main/eBirdHelperSingleFile.js
+// @updateURL  https://raw.githubusercontent.com/wzy0421/ebirdHelper/dev/eBirdHelperSingleFile.dev.js
+// @downloadURL  https://raw.githubusercontent.com/wzy0421/ebirdHelper/dev/eBirdHelperSingleFile.dev.js
 // ==/UserScript==
 
 /**
@@ -25,7 +25,7 @@ const HIGHLIGHT_ENDEMIC = true;
 const ENABLE_FULL_MATCH = false; // 控制是否在整页匹配所有鸟种
 const ENABLE_PARTIAL_MATCH = true; // 控制是否仅在特定区域匹配
 
-const RAW_BASE = 'https://raw.githubusercontent.com/wzy0421/ebirdHelper/main/';
+const RAW_BASE = 'https://raw.githubusercontent.com/wzy0421/ebirdHelper/dev/';
 const FILES = {
     CN_MAP: 'birdMap.json',
     ENDEMIC_MAP: 'endemicMap.json',
