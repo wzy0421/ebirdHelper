@@ -139103,7 +139103,7 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
                 exact.push(it);
             } else if (p.indexOf(t) === 0 || ini.indexOf(t) === 0) {
                 starts.push(it);
-            } /*else if (p.indexOf(t) !== -1 || ini.indexOf(t) !== -1) {
+            } /* else if (p.indexOf(t) !== -1 || ini.indexOf(t) !== -1) {
                 contains.push(it);
             } */
         }
