@@ -77,6 +77,14 @@ def rewrite_urls_for_branch(
     return text
 
 
+def rename_script(text: str, suffix: str) -> str:
+    """Append suffix to @name, so Tampermonkey shows (and keeps) the bundle apart from eBirdHelper.js."""
+    text, n = re.subn(r"^(//\s*@name\s+)(.*?)\s*$", lambda m: f"{m.group(1)}{m.group(2)}{suffix}", text, count=1, flags=re.MULTILINE)
+    if n != 1:
+        raise RuntimeError("@name not found in eBirdHelper.js")
+    return text
+
+
 def strip_userscript_header(text: str) -> str:
     return re.sub(
         r"// ==UserScript==[\s\S]*?// ==/UserScript==\s*",
@@ -110,6 +118,7 @@ def build_single(branch: str, bird_map: object) -> Path:
     dest = ROOT / bundle_name
 
     output = render_bundle(branch, bird_map, include_meta=True, bundle_name=bundle_name)
+    output = rename_script(output, "（单文件版）" if branch == "main" else "（单文件 dev 版）")
 
     dest.write_text(output, encoding="utf-8")
     print(f"Wrote {branch} bundle to {dest}")

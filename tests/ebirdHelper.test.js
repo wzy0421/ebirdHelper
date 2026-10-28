@@ -66,6 +66,12 @@ test('单文件版本：数据已内联，不再请求 birdMap', async () => {
     }
 });
 
+test('单文件版本的 @name 与主脚本不同，Tampermonkey 里能区分', () => {
+    const name = source => /^\/\/\s*@name\s+(.+?)\s*$/m.exec(source)[1];
+    const names = ['eBirdHelper.js', 'eBirdHelperSingleFile.js', 'eBirdHelperSingleFile.dev.js'].map(f => name(readSource(f)));
+    assert.equal(new Set(names).size, 3, names.join(' / '));
+});
+
 // ---------- 问题 2：@grant 与首次加载 ----------
 
 test('首次加载（无缓存）：数据能拉下来并写入 GM 缓存', async () => {
