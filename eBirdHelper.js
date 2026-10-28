@@ -1,10 +1,14 @@
 // ==UserScript==
 // @name         eBird 添加中文鸟名
 // @namespace    http://tampermonkey.net/
-// @version      2.0.1
+// @version      2.1.0
 // @description  在 eBird 网站上将鸟名改为“英文名(中文名)”格式
 // @match        https://ebird.org/*
 // @grant        GM.getValue
+// @grant        GM.setValue
+// @grant        GM.deleteValue
+// @grant        GM.xmlHttpRequest
+// @connect      raw.githubusercontent.com
 // @updateURL  https://raw.githubusercontent.com/wzy0421/ebirdHelper/main/eBirdHelper.js
 // @downloadURL  https://raw.githubusercontent.com/wzy0421/ebirdHelper/main/eBirdHelper.js
 // ==/UserScript==
@@ -18,23 +22,18 @@
 
 const STORAGE_KEY = 'ebirdSpeciesList';
 const HIGHLIGHT_COLOR = '#A35F00';
-const ENDEMIC_HIGHLIGHT_COLOR = '#C0262E'; // one-country endemic
-const NONENDEMIC_HIGHLIGHT_COLOR = HIGHLIGHT_COLOR; // 复用你原来的 '#A35F00'
 
-const HIGHLIGHT_ENDEMIC = true;
 const ENABLE_FULL_MATCH = false; // 控制是否在整页匹配所有鸟种
 const ENABLE_PARTIAL_MATCH = true; // 控制是否仅在特定区域匹配
 
 const RAW_BASE = 'https://raw.githubusercontent.com/wzy0421/ebirdHelper/main/';
 const FILES = {
     CN_MAP: 'birdMap.json',
-    ENDEMIC_MAP: 'endemicMap.json',
 };
 
 /** 缓存配置 */
 const CACHE_KEYS = {
     CN_MAP: 'ebh_cn_map_cache_v1',
-    ENDEMIC_MAP: 'ebh_endemic_map_cache_v1',
 };
 const DEFAULT_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 1 年缓存，避免频繁请求
 
@@ -59,19 +58,41 @@ async function loadJSONWithCache(cacheKey, filePath, ttlMs = DEFAULT_TTL_MS) {
     return fetchAndStore(cacheKey, url, cached?.etag ?? null);
 }
 
+/**
+ * 用 GM.xmlHttpRequest 发 GET 请求。
+ * 不能用 fetch：eBird 页面的 CSP 不允许连接 raw.githubusercontent.com，
+ * 而且带 If-None-Match 的跨域请求要先预检，GitHub 对预检返回 403。
+ * GM.xmlHttpRequest 由 Tampermonkey 发出，两者都不受影响（需要 @connect 声明域名）。
+ */
+function gmGet(url, headers = {}) {
+    return new Promise((resolve, reject) => {
+        GM.xmlHttpRequest({
+            method: 'GET',
+            url,
+            headers,
+            timeout: 30000,
+            onload: res => resolve({
+                status: res.status,
+                ok: res.status >= 200 && res.status < 300,
+                statusText: res.statusText,
+                text: res.responseText,
+                etag: ((/^etag:\s*(.+)$/im.exec(res.responseHeaders || '') || [])[1] || '').trim() || null,
+            }),
+            onerror: () => reject(new Error(`Request failed: ${url}`)),
+            ontimeout: () => reject(new Error(`Request timed out: ${url}`)),
+        });
+    });
+}
+
 /** 后台条件刷新：If-None-Match 304 则复用旧数据，否则更新 */
 async function conditionalRefresh(cacheKey, url, etag) {
     try {
         // 发送条件请求（如服务器支持 ETag，会返回 304）
-        const res = await fetch(url, {
-            headers: etag ? { 'If-None-Match': etag } : {},
-            // raw.githubusercontent.com 允许 CORS；默认即可
-        });
+        const res = await gmGet(url, etag ? { 'If-None-Match': etag } : {});
         if (res.status === 304) return; // 内容未变
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        const newEtag = res.headers.get('etag') || null;
-        await GM.setValue(cacheKey, { data, etag: newEtag, fetchedAt: Date.now() });
+        const data = JSON.parse(res.text);
+        await GM.setValue(cacheKey, { data, etag: res.etag, fetchedAt: Date.now() });
     } catch (e) {
         // 静默失败，不打扰用户
         console.debug('[ebh] conditional refresh failed:', e);
@@ -80,15 +101,14 @@ async function conditionalRefresh(cacheKey, url, etag) {
 
 /** 前台拉取并写回缓存（用于过期或首次加载） */
 async function fetchAndStore(cacheKey, url, etag) {
-    const res = await fetch(url, { headers: etag ? { 'If-None-Match': etag } : {} });
+    const res = await gmGet(url, etag ? { 'If-None-Match': etag } : {});
     if (res.status === 304) {
         const cached = await GM.getValue(cacheKey, null);
         if (cached) return cached.data;
     }
     if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
-    const data = await res.json();
-    const newEtag = res.headers.get('etag') || null;
-    await GM.setValue(cacheKey, { data, etag: newEtag, fetchedAt: Date.now() });
+    const data = JSON.parse(res.text);
+    await GM.setValue(cacheKey, { data, etag: res.etag, fetchedAt: Date.now() });
     return data;
 }
 
@@ -108,36 +128,26 @@ function buildBirdNamePatternFromMap(map = {}) {
 
 /** 对外暴露的获取函数 */
 const dataStore = {
-    /** 获取英文名 -> 中文名（IOC）Map（对象或 Map 均可用） */
+    /** 获取英文名 -> 中文名（eBird 简体中文名录）Map（对象或 Map 均可用） */
     async getBirdNameMap() {
-        // 约定 json 结构是 { "Common Name": "中文名", ... }
+        // 约定 json 结构是 { "Common Name": "Common Name(中文名)", ... }
         const obj = await loadJSONWithCache(CACHE_KEYS.CN_MAP, FILES.CN_MAP);
         // 你如果更喜欢 Map：
         // return new Map(Object.entries(obj));
         return obj;
     },
-    /** 获取 Endemic Map（物种 -> 国家/区域） */
-    async getEndemicMap() {
-        // 约定 json 结构是 { "Species or Common Name": "COUNTRY/REGION or Array", ... }
-        const obj = await loadJSONWithCache(CACHE_KEYS.ENDEMIC_MAP, FILES.ENDEMIC_MAP);
-        return obj;
-    },
     /** 手动清空缓存（可挂到菜单里） */
     async clearCache() {
         await GM.deleteValue(CACHE_KEYS.CN_MAP);
-        await GM.deleteValue(CACHE_KEYS.ENDEMIC_MAP);
         alert('eBird Helper：已清空本地缓存，下次将从 GitHub 重新拉取。');
     }
 };
 
 
 // @ebh-inline-data-start
-// This block is replaced by scripts/build_single_file.js to produce the
-// offline-friendly single-file build with birdMap/endemicMap inlined.
-const [birdMap, endemicMap] = await Promise.all([
-    dataStore.getBirdNameMap(),
-    dataStore.getEndemicMap()
-]);
+// This block is replaced by scripts/build_single_file.py to produce the
+// offline-friendly single-file build with birdMap inlined.
+const birdMap = await dataStore.getBirdNameMap();
 // @ebh-inline-data-end
 const birdNamePattern = buildBirdNamePatternFromMap(birdMap);
 const markedSet = new WeakSet(); // ✅ 缓存机制：已处理元素集合
@@ -195,6 +205,12 @@ function updateSpeciesFromLifelistPage() {
         }
     });
 
+    // 页面上一个都没抓到，多半是还没加载完，不能拿它覆盖本地列表
+    if (pageMap.size === 0) {
+        console.warn('[eBird Species Tracker] 页面上未找到物种，已跳过更新。');
+        return;
+    }
+
     // 2) 计算新增与删除
     const pageSet = new Set(pageMap.keys());
     let added = 0, removed = 0;
@@ -204,6 +220,17 @@ function updateSpeciesFromLifelistPage() {
     }
     for (const name of existingSet) {
         if (!pageSet.has(name)) removed++;
+    }
+
+    // 删除前先确认：页面没加载全时，以页面为准会丢掉已见鸟种
+    if (removed > 0 && !confirm(
+        `生涯清单页面上有 ${pageSet.size} 种，本地记录中有 ${removed} 种不在页面上。\n` +
+        '确定：以页面为准删除它们；取消：保留它们，只合并新增。'
+    )) {
+        for (const s of existing) {
+            if (!pageMap.has(s.commonName)) pageMap.set(s.commonName, s.latinName);
+        }
+        removed = 0;
     }
 
     // 3) 以页面为准重建并保存
@@ -297,7 +324,7 @@ function ensureHighlightCSS() {
 }
 
 /**
- * 在各类 eBird 页面上高亮未见过的鸟种，并根据 endemicMap 区分颜色。
+ * 在各类 eBird 页面上高亮未见过的鸟种。
  * 会跳过 sp./hybrid/slash 等无效条目。
  */
 function highlightUnseenSpecies() {
@@ -330,21 +357,8 @@ function highlightUnseenSpecies() {
         if (!seenBirds.has(cleanName)) {
             ensureHighlightCSS(); // 保证样式注入
 
-            // ——新增：根据 endemicMap 区分颜色——
-            const countryCode = endemicMap?.[cleanName]; // e.g. 'ID', 'MG', 'PH'...
-            const isEndemic = !!countryCode;
-
             el.setAttribute('data-ebird-unseen', '1');
-            el.setAttribute('data-ebird-endemic', isEndemic ? '1' : '0');
-            if (isEndemic && HIGHLIGHT_ENDEMIC) {
-                // 赋 endemic 色，并加个简短说明
-                el.style.setProperty('--ebird-highlight', ENDEMIC_HIGHLIGHT_COLOR);
-                if (!el.title) el.title = `Endemic (${countryCode})`;
-                else if (!/Endemic \([A-Z]{2}\)/.test(el.title)) el.title += ` | Endemic (${countryCode})`;
-            } else {
-                // 非特有：用原来的高亮色
-                el.style.setProperty('--ebird-highlight', NONENDEMIC_HIGHLIGHT_COLOR);
-            }
+            el.style.setProperty('--ebird-highlight', HIGHLIGHT_COLOR);
 
             // 在末尾补一个星标（保留你原逻辑）
             if (!rawText.includes('*')) {
@@ -361,16 +375,43 @@ function isLifelistPage() {
     return location.href.startsWith('https://ebird.org/lifelist?time=life&r=world');
 }
 
+/**
+ * 等生涯清单的物种数连续几次不再变化后再回调，代替固定延时；
+ * 最多等 maxWaitMs，超时也照常回调（由 updateSpeciesFromLifelistPage 自己兜底）。
+ */
+function whenLifelistStable(callback, intervalMs = 500, stableRounds = 3, maxWaitMs = 20000) {
+    const start = Date.now();
+    let lastCount = -1;
+    let stable = 0;
+
+    const timer = setInterval(() => {
+        const count = document.querySelectorAll('section#nativeNatProv .Observation').length;
+        stable = (count > 0 && count === lastCount) ? stable + 1 : 0;
+        lastCount = count;
+
+        if (stable >= stableRounds || Date.now() - start >= maxWaitMs) {
+            clearInterval(timer);
+            callback();
+        }
+    }, intervalMs);
+}
+
+/** load 之后执行；脚本启动时 load 已经过去（等数据加载太久）就立即执行 */
+function onPageLoad(callback) {
+    if (document.readyState === 'complete') callback();
+    else window.addEventListener('load', callback);
+}
+
 /** 非 lifelist 页面在 load 后启动高亮 + MutationObserver */
 function bootstrapHighlighting() {
     if (isLifelistPage()) {
-        window.addEventListener('load', () => {
-            setTimeout(updateSpeciesFromLifelistPage, 2000);
+        onPageLoad(() => {
+            whenLifelistStable(updateSpeciesFromLifelistPage);
         });
         return;
     }
 
-    window.addEventListener('load', () => {
+    onPageLoad(() => {
         setTimeout(() => {
             highlightUnseenSpecies();
 
@@ -400,9 +441,22 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
         return;
     }
 
+    /** 脚本、样式和用户能编辑的文字不替换，否则会把“(中文)”写进用户提交的内容 */
+    const SKIP_PARENT_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA']);
+    const textFilter = {
+        acceptNode(n) {
+            const parent = n.parentElement;
+            if (!parent || SKIP_PARENT_TAGS.has(parent.tagName) ||
+                parent.closest('[contenteditable]:not([contenteditable="false"])')) {
+                return NodeFilter.FILTER_REJECT;
+            }
+            return NodeFilter.FILTER_ACCEPT;
+        }
+    };
+
     /** 遍历文本节点并把“英文名”替换成“英文(中文)” */
     function walkAndReplace(node) {
-        const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null, false);
+        const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, textFilter, false);
 
         let n;
         while ((n = walker.nextNode())) {
@@ -446,7 +500,7 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
     const LOG_PREFIX = '[eBird@Pinyin]';
     const log = (...a) => console.log(LOG_PREFIX, ...a);
 
-    const URL_MAPPING = 'https://raw.githubusercontent.com/wzy0421/ebirdHelper/dev/pinyin_mapping.json';
+    const URL_MAPPING = RAW_BASE + 'pinyin_mapping.json';
     const CACHE_KEY = 'pinyin_mapping_cache_v9';
     const CACHE_TTL = 86400 * 1000; // 24h
 
@@ -475,38 +529,9 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
        --------------------------------------- */
 
     function gmFetchJSON(url) {
-        return new Promise(function (resolve, reject) {
-            if (typeof GM_xmlhttpRequest === 'function') {
-                GM_xmlhttpRequest({
-                    method: 'GET',
-                    url: url,
-                    headers: { 'Accept': 'application/json' },
-                    onload: function (res) {
-                        try {
-                            if (res.status >= 200 && res.status < 300) {
-                                resolve(JSON.parse(res.responseText));
-                            } else {
-                                reject(new Error('HTTP ' + res.status));
-                            }
-                        } catch (e) {
-                            reject(e);
-                        }
-                    },
-                    onerror: function (e) { reject(e); },
-                    timeout: 15000,
-                    ontimeout: function () { reject(new Error('timeout')); }
-                });
-            } else if (typeof fetch === 'function') {
-                fetch(url)
-                    .then(function (r) {
-                        if (!r.ok) throw new Error('HTTP ' + r.status);
-                        return r.json();
-                    })
-                    .then(resolve)
-                    .catch(reject);
-            } else {
-                reject(new Error('no fetch / GM_xmlhttpRequest'));
-            }
+        return gmGet(url, { 'Accept': 'application/json' }).then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return JSON.parse(res.text);
         });
     }
 
@@ -803,8 +828,9 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
             wrap.setAttribute('role', 'option');
         }
 
-        // 标记一下这是拼音插入的
+        // 标记一下这是拼音插入的，并记下对应物种，回车选中时要用
         wrap.classList.add('__pinyin-item');
+        wrap.__pinyinItem = item;
 
         // === 和原生一致的结构 ===
         // <span class="Suggestion-text">
@@ -969,12 +995,12 @@ const seenBirds = new Set(loadSpeciesList().map(s => s.commonName));
         var list = ctx.list;
         if (!list) return;
 
-        var btn = list.querySelector('.__pinyin-item button');
-        if (!btn) return;
+        var first = list.querySelector('.__pinyin-item');
+        if (!first || !first.__pinyinItem) return;
 
         e.preventDefault();
         e.stopPropagation();
-        btn.click();
+        pickItem(first.__pinyinItem);
     }
 
     /* ---------------------------------------

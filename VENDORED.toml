@@ -1,0 +1,12 @@
+# Files copied from bird_data (../bird_data); compare them with
+#   python ../bird_data/bird_data.py vendor --check .
+
+["birdMap.json"]
+source = "names/birdMap.json"
+sha256 = "1316ca9d87a24587bc19b6a21890b14541715d0d5cbab92fd0198ca1fe8a0a84"
+commit = "fe2e9bb14dfb2de924f5b93774cc610e638b36ca"
+
+["pinyin_mapping.json"]
+source = "names/pinyin_mapping.json"
+sha256 = "496191554b1741119c992a5131d4a6cff6a41097e5a5e7e8eb53936005a9c9b9"
+commit = "fe2e9bb14dfb2de924f5b93774cc610e638b36ca"
