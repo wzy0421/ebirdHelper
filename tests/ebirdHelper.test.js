@@ -226,20 +226,61 @@ test('生涯清单陆续加载：等列表稳定后再同步，不误删', async
     }
 });
 
-test('生涯清单：新增物种会合并进本地列表', async () => {
-    const page = await openPage({
-        url: LIFELIST_URL, html: fixture('lifelist.html'), speed: 10,
-        localStorage: { ebirdSpeciesList: asSaved(LIFE.slice(0, 4)) },
+for (const url of [
+    LIFELIST_URL,
+    `${LIFELIST_URL}&sortBy=taxon_order`,
+    'https://ebird.org/lifelist',
+    'https://ebird.org/lifelist/',
+    'https://ebird.org/lifelist?sortBy=taxon_order',
+    'https://ebird.org/lifelist/?sortBy=taxon_order&r=world&time=life',
+    'https://ebird.org/lifelist?time=life',
+    'https://ebird.org/lifelist?r=world',
+    'https://ebird.org/lifelist?time=&r=',
+    'https://ebird.org/lifelist?time=&r=world',
+    'https://ebird.org/lifelist?time=life&r=',
+]) {
+    test(`生涯清单：新增物种会合并进本地列表 (${url})`, async () => {
+        const page = await openPage({
+            url, html: fixture('lifelist.html'), speed: 10,
+            localStorage: { ebirdSpeciesList: asSaved(LIFE.slice(0, 4)) },
+        });
+        try {
+            addToLifelist(page.document, LIFE);
+            for (let attempt = 0; attempt < 40 && page.savedSpecies().length !== LIFE.length; attempt++) {
+                await sleep(50);
+            }
+            assert.deepEqual(page.savedSpecies(), asSaved(LIFE));
+            assert.deepEqual(page.dialogs.map(d => d[0]), ['alert']);
+        } finally {
+            page.close();
+        }
     });
-    try {
-        addToLifelist(page.document, LIFE);
-        await sleep(400);
-        assert.deepEqual(page.savedSpecies(), asSaved(LIFE));
-        assert.deepEqual(page.dialogs.map(d => d[0]), ['alert']);
-    } finally {
-        page.close();
-    }
-});
+}
+
+for (const url of [
+    'https://ebird.org/lifelist?time=life&r=US',
+    'https://ebird.org/lifelist?time=year&r=world',
+    'https://ebird.org/lifelist?r=US',
+    'https://ebird.org/lifelist/?time=year',
+    'https://ebird.org/lifelist?time=life&r=worldwide',
+    'https://ebird.org/lifelist/other?time=life&r=world',
+]) {
+    test(`其他清单地址不覆盖全球生涯列表 (${url})`, async () => {
+        const existing = asSaved(LIFE.slice(0, 2));
+        const page = await openPage({
+            url, html: fixture('lifelist.html'), speed: 10,
+            localStorage: { ebirdSpeciesList: existing },
+        });
+        try {
+            addToLifelist(page.document, LIFE);
+            await sleep(400);
+            assert.deepEqual(page.savedSpecies(), existing);
+            assert.deepEqual(page.dialogs, []);
+        } finally {
+            page.close();
+        }
+    });
+}
 
 test('生涯清单为空：不覆盖本地列表', async () => {
     const page = await openPage({
