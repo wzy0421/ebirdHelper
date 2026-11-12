@@ -11572,7 +11572,11 @@ function highlightUnseenSpecies() {
 
 /** lifelist 页面专用：只同步物种，不做 DOM 替换 */
 function isLifelistPage() {
-    return location.href.startsWith('https://ebird.org/lifelist?time=life&r=world');
+    const url = new URL(location.href);
+    return url.origin === 'https://ebird.org' &&
+        /^\/lifelist\/?$/.test(url.pathname) &&
+        ['', 'life'].includes(url.searchParams.get('time') || '') &&
+        ['', 'world'].includes(url.searchParams.get('r') || '');
 }
 
 /**
